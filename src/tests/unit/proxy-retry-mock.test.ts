@@ -885,19 +885,43 @@ describe('GeminiClient internal request parity', () => {
     expect(postSpy.mock.calls[1][2]?.headers).not.toHaveProperty('x-goog-user-project');
   });
 
-  it('retries an accepted warmup 403 without x-goog-user-project', async () => {
+  it('rejects an accepted warmup 403 without sending a downgrade generation', async () => {
     const postSpy = vi
       .spyOn(axios, 'post')
-      .mockResolvedValueOnce({ status: 403, data: Readable.from([]) })
-      .mockResolvedValueOnce({ status: 200, data: Readable.from([]) });
+      .mockResolvedValueOnce({ status: 403, data: Readable.from([]) });
     const client = new GeminiClient(new Upstream4xxCaptureService());
 
-    await client.warmupInternal({ project: 'project-1', request: {} } as any, 'access-token');
+    await expect(
+      client.warmupInternal({ project: 'project-1', request: {} } as any, 'access-token'),
+    ).rejects.toThrow('Weekly warmup rejected with HTTP 403');
 
-    expect(postSpy).toHaveBeenCalledTimes(2);
-    expect(postSpy.mock.calls[1][0]).toBe(postSpy.mock.calls[0][0]);
+    expect(postSpy).toHaveBeenCalledOnce();
     expect(postSpy.mock.calls[0][2]?.headers?.['x-goog-user-project']).toBe('project-1');
-    expect(postSpy.mock.calls[1][2]?.headers).not.toHaveProperty('x-goog-user-project');
+  });
+
+  it('rejects an Axios warmup 403 without sending a non-streaming fallback generation', async () => {
+    const forbidden = new AxiosError(
+      'Request failed with status code 403',
+      undefined,
+      undefined,
+      undefined,
+      {
+        data: { error: { message: 'PERMISSION_DENIED' } },
+        status: 403,
+        statusText: 'Forbidden',
+        headers: {},
+        config: {} as any,
+      },
+    );
+    const postSpy = vi.spyOn(axios, 'post').mockRejectedValue(forbidden);
+    const client = new GeminiClient(new Upstream4xxCaptureService());
+
+    await expect(
+      client.warmupInternal({ project: 'project-1', request: {} } as any, 'access-token'),
+    ).rejects.toMatchObject({ status: 403 });
+
+    expect(postSpy).toHaveBeenCalledOnce();
+    expect(postSpy.mock.calls[0][0]).toContain(':streamGenerateContent?alt=sse');
   });
 
   it('removes x-goog-user-project at most once and preserves the final 403', async () => {

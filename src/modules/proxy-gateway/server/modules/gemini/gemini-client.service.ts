@@ -40,6 +40,10 @@ interface PreparedInternalRequest {
   cacheKey?: string;
 }
 
+interface InternalEndpointRetryPolicy {
+  allowProjectHeaderDowngrade: boolean;
+}
+
 const PROJECT_HEADER_ATTEMPT_COUNT = 2;
 
 @Injectable()
@@ -147,15 +151,20 @@ export class GeminiClient {
           validateStatus: () => true,
         },
         'weekly-warmup',
+        undefined,
+        { allowProjectHeaderDowngrade: false },
       );
     };
     try {
       let response: AxiosResponse<Readable>;
       try {
         response = await send(':streamGenerateContent?alt=sse');
-      } catch {
+      } catch (error) {
         if (signal.aborted) {
           throw new Error('Weekly warmup cancelled');
+        }
+        if (error instanceof UpstreamRequestError && error.status !== undefined) {
+          throw error;
         }
         response = await send(':generateContent');
       }
@@ -521,6 +530,7 @@ export class GeminiClient {
     config: AxiosRequestConfig,
     operation: string,
     extraHeaders?: Record<string, string>,
+    retryPolicy: InternalEndpointRetryPolicy = { allowProjectHeaderDowngrade: true },
   ): Promise<AxiosResponse<T>> {
     const baseUrls = this.getInternalBaseUrls();
     const timeout = this.getInternalTimeoutMs();
@@ -561,7 +571,11 @@ export class GeminiClient {
             proxy: axiosProxy,
             ...config,
           });
-          if (response.status === 403 && Boolean(projectHeaders['x-goog-user-project'])) {
+          if (
+            retryPolicy.allowProjectHeaderDowngrade &&
+            response.status === 403 &&
+            Boolean(projectHeaders['x-goog-user-project'])
+          ) {
             if (response.data instanceof Readable) {
               response.data.destroy();
             }
@@ -579,7 +593,10 @@ export class GeminiClient {
           }
           lastError = error;
 
-          if (this.shouldRetryWithoutProjectHeader(error, projectHeaders)) {
+          if (
+            retryPolicy.allowProjectHeaderDowngrade &&
+            this.shouldRetryWithoutProjectHeader(error, projectHeaders)
+          ) {
             this.logger.warn(
               `[${operation}] received 403 with x-goog-user-project; retrying without project header.`,
             );

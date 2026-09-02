@@ -59,6 +59,8 @@ const TOOL_SCHEMA_CACHE_LIMIT = 100;
 const TOOL_SCHEMA_CACHE_TTL_MS = 30 * 60 * 1000;
 let placeholderSignatureUsageCount = 0;
 
+const CLAUDE_AGENT_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 /**
  * How often the proxy fell back to the placeholder instead of a real thought
  * signature, counted once per request that used it at least once (not once per
@@ -602,6 +604,11 @@ function injectGoogleSearchTool(body: { tools?: GeminiToolDeclaration[] }, mappe
  * Builds system instruction
  * Converts Claude system prompts to Gemini format with a default assistant identity directive.
  */
+
+function normalizeClaudeClientIdentity(text: string): string {
+  return text === CLAUDE_AGENT_SDK_IDENTITY ? CLAUDE_CODE_IDENTITY : text;
+}
+
 function buildSystemInstruction(
   system: ClaudeRequest['system'],
   extraSystemMessages: string[],
@@ -616,11 +623,13 @@ function buildSystemInstruction(
 
   if (system) {
     if (isString(system)) {
-      instructions.push(sanitizeSystemInstructionForCache(system));
+      instructions.push(sanitizeSystemInstructionForCache(normalizeClaudeClientIdentity(system)));
     } else if (Array.isArray(system)) {
       for (const block of system) {
         if (block.type === 'text') {
-          instructions.push(sanitizeSystemInstructionForCache(block.text));
+          instructions.push(
+            sanitizeSystemInstructionForCache(normalizeClaudeClientIdentity(block.text)),
+          );
         }
       }
     }

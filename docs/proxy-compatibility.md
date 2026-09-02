@@ -1,12 +1,18 @@
 # Proxy Compatibility Reference
 
-## Missing thought signatures on tool calls
+## Claude Agent SDK Client Identity
+
+Claude request mapping normalizes the exact top-level Claude Agent SDK identity sentence to the Claude Code identity before cache sanitization. The rule applies to a string `system` value and to matching text blocks in a top-level `system` array. It is intentionally exact: mentions inside longer text, whitespace-padded variants, and embedded role-bearing system messages remain unchanged.
+
+The normalized Claude Code text remains a client customization rather than an official-provider identity marker. The mapper therefore retains the Antigravity fallback identity alongside it, preserving the existing cache and provider-routing contract.
+
+## Missing Thought Signatures on Tool Calls
 
 Claude request mapping injects the compatibility sentinel for an unsigned tool call when thinking is enabled **or** the mapped model keeps unsigned thinking history (Gemini Flash or pro-agent). Resource-style `projects/` models are excluded from this fallback. Available real signatures and existing cache precedence remain authoritative.
 
 Native Gemini request mapping completes the camel-case and snake-case signature aliases without mutating caller history. An existing alias supplies the missing alias. Only a model name containing both `gemini` and `flash`, case-insensitively, receives the sentinel when neither alias exists. Native pro-agent requests do not inherit the Claude-only allowance. This route does not add a new session-signature cache. Streaming and non-streaming requests share the envelope conversion.
 
-## Responses requests and durable history
+## Responses Requests and Durable History
 
 Role-bearing messages with a missing or non-string `type` use the message path. Explicit empty-string and unknown string types are ignored as whole input items. Non-string roles default to `user`. String roles are retained through input parsing; the shared downstream conversion treats `system` and `developer` as instructions, keeps `assistant` and tool semantics, and degrades every other string role to `user` instead of forwarding an unknown Gemini role. Array content collects every string `text`, including empty strings, joins them with newlines, and then appends validated image blocks. Both `input_image` and `image_url` accept a URL string or a validated URL object. URLs must be non-empty strings, `detail` must be `auto`, `low` or `high`, and other JSON extensions are retained. Supporting the object form for `input_image` is an intentional compatibility extension beyond upstream. Malformed image blocks are ignored rather than forwarded unchecked. Non-array JSON object content contributes no text; the enclosing message remains available to the existing cleanup rules. Top-level input objects, tool outputs and primitive content retain their existing conversion behavior.
 
@@ -22,7 +28,7 @@ When image content is present, the Responses-to-chat conversion omits a text blo
 
 Response IDs, function/custom tool IDs, namespaces and call IDs are preserved. Old stored response payloads are replayed unchanged by GET. The durable record format remains version 1 with the existing one-hour TTL, 500-session limit, missing-ID errors, deletion and `store: false` semantics. Recovery requires an entry retained within those limits and a completed disk flush; this is not a guarantee for interrupted writes or incomplete streams.
 
-## Tool configuration and explicit context caching
+## Tool Configuration and Explicit Context Caching
 
 OpenAI function tools produce both camelCase and snake_case configurations. Anthropic mapped tools produce both aliases and retain explicit tool-choice modes. Native Gemini requests containing `tools`, including an empty array, preserve each valid supplied configuration and add its invocation-reporting flag. A missing configuration receives `VALIDATED`; an existing empty object receives only the flag. Without tools, supplied configurations remain unchanged. Malformed configuration aliases or a non-array `tools` value return a client error before account selection; they are not forwarded unchanged to the provider.
 

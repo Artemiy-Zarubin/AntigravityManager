@@ -39,6 +39,7 @@ function ensureDatabaseInitialized(dbPath: string): void {
         avatar_url TEXT,
         token_json TEXT NOT NULL,
         quota_json TEXT,
+        health_json TEXT,
         device_profile_json TEXT,
         device_history_json TEXT,
         created_at INTEGER NOT NULL,
@@ -56,6 +57,7 @@ function ensureDatabaseInitialized(dbPath: string): void {
     const hasDeviceHistoryJson = tableInfo.some((col) => col.name === 'device_history_json');
     const hasProxyUrl = tableInfo.some((col) => col.name === 'proxy_url');
     const hasStatusReason = tableInfo.some((col) => col.name === 'status_reason');
+    const hasHealthJson = tableInfo.some((col) => col.name === 'health_json');
     if (!hasIsActive) {
       db.exec('ALTER TABLE accounts ADD COLUMN is_active INTEGER DEFAULT 0');
     }
@@ -70,6 +72,9 @@ function ensureDatabaseInitialized(dbPath: string): void {
     }
     if (!hasStatusReason) {
       db.exec('ALTER TABLE accounts ADD COLUMN status_reason TEXT');
+    }
+    if (!hasHealthJson) {
+      db.exec('ALTER TABLE accounts ADD COLUMN health_json TEXT');
     }
 
     db.exec(`CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);`);

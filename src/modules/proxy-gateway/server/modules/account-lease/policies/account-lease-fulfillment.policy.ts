@@ -1,5 +1,6 @@
 import type { CloudAccount } from '@/modules/cloud-account/types';
 import type { AccountLeaseHydrationPolicy } from './account-lease-hydration.policy';
+import { AccountLeaseRefreshRejectedError } from './account-lease-hydration.policy';
 import type { AccountLeaseTokenData } from '../interfaces/account-lease-token-types';
 
 interface AccountLeaseFulfillmentLogger {
@@ -60,6 +61,9 @@ export class AccountLeaseFulfillmentPolicy {
         last_used: timestamp,
       };
     } catch (error) {
+      if (error instanceof AccountLeaseRefreshRejectedError) {
+        throw error;
+      }
       this.options.logger.error('Failed to finalize selected account token', error);
       return null;
     }

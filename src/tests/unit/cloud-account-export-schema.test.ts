@@ -86,4 +86,16 @@ describe('CloudAccountExportSchema device profile validation', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it('does not import persisted account health from an export payload', () => {
+    const result = CloudAccountExportSchema.parse(
+      createExport([
+        createExportAccount({
+          health: { oauth: { refresh_blocked: true, reason: 'invalid_grant' } },
+        }),
+      ]),
+    );
+
+    expect(result.accounts[0]).not.toHaveProperty('health');
+  });
 });

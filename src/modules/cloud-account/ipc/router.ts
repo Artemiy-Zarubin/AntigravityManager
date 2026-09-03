@@ -7,6 +7,7 @@ import {
   deleteCloudIdentityProfileRevision,
   listCloudAccounts,
   deleteCloudAccount,
+  openAccountValidationLink,
   getCloudIdentityProfiles,
   openCloudIdentityStorageFolder,
   previewGenerateCloudIdentityProfile,
@@ -168,6 +169,13 @@ export const cloudRouter = os.router({
     .output(z.void())
     .handler(async ({ input }) => {
       await deleteCloudAccount(input.accountId);
+    }),
+
+  openAccountValidationLink: os
+    .input(z.object({ accountId: z.string() }))
+    .output(z.void())
+    .handler(async ({ input }) => {
+      await openAccountValidationLink(input.accountId);
     }),
 
   refreshAccountQuota: os

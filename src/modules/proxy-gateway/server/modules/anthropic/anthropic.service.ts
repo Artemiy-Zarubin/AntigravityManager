@@ -107,6 +107,10 @@ export class AnthropicService extends BaseProxyService {
 
       const token = await this.selectRetryToken(retryState, targetModel, sessionKey);
       if (!token) {
+        if (lastError !== null) {
+          throw lastError;
+        }
+
         throw new Error('No available accounts');
       }
       const effectiveTargetModel = this.accountLeaseService.resolveDynamicModelForAccount(

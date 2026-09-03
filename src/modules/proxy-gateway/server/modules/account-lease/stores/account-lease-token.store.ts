@@ -43,7 +43,7 @@ export class AccountLeaseTokenCache {
   }
 
   mapAccountToTokenData(account: CloudAccount): AccountLeaseTokenData | null {
-    if (!account.token) {
+    if (!account.token || account.health?.oauth?.refresh_blocked === true) {
       return null;
     }
 
@@ -64,6 +64,8 @@ export class AccountLeaseTokenCache {
       project_id: account.token.project_id || undefined,
       session_id: account.token.session_id || this.generateSessionId(),
       upstream_proxy_url: account.token.upstream_proxy_url || account.proxy_url || undefined,
+      validation_blocked_until_ms: account.health?.validation?.next_probe_at_ms,
+      oauth_health: account.health?.oauth,
       quota,
       model_quotas: extractedState.modelQuotas,
       model_limits: extractedState.modelLimits,

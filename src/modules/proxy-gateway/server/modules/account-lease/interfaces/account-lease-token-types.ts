@@ -1,5 +1,5 @@
 import { isString } from 'lodash-es';
-import type { CloudQuotaData } from '@/modules/cloud-account/types';
+import type { CloudAccountHealth, CloudQuotaData } from '@/modules/cloud-account/types';
 
 export interface AccountLeaseTokenData {
   email: string;
@@ -14,6 +14,8 @@ export interface AccountLeaseTokenData {
   project_id?: string;
   session_id?: string;
   upstream_proxy_url?: string;
+  validation_blocked_until_ms?: number;
+  oauth_health?: CloudAccountHealth['oauth'];
   quota?: CloudQuotaData;
   model_quotas: Record<string, number>;
   model_limits: Record<string, number>;

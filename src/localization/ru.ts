@@ -454,6 +454,7 @@ const ru = {
       validationRiskControlled: 'Риск / Ограничение',
       validationOAuthReauthRequired: 'Требуется повторный OAuth',
       validationRequired: 'Требуется проверка',
+      completeValidation: 'Пройти проверку',
       left: 'ост.',
       used: 'Исп.',
       unknown: 'Неизвестный',

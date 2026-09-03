@@ -24,8 +24,18 @@ export interface OpenAIChatRequest {
   tool_choice?: string | { type: string; function?: { name: string } };
   thinking?: OpenAIThinkingConfig;
   reasoning_effort?: string;
-  response_format?: { type?: string };
+  response_format?: OpenAIResponseFormat;
   extra?: Record<string, unknown>;
+}
+
+export interface OpenAIResponseFormat {
+  type?: string;
+  json_schema?: {
+    name?: string;
+    description?: string;
+    schema: Record<string, unknown>;
+    strict?: boolean;
+  };
 }
 
 export interface OpenAIThinkingConfig {
@@ -44,11 +54,15 @@ export interface OpenAIMessage {
 }
 
 export interface OpenAIContentPart {
-  type: 'text' | 'image_url';
+  type: 'text' | 'image_url' | 'input_audio' | 'audio';
   text?: string;
   image_url?: {
     url: string;
     detail?: 'auto' | 'low' | 'high';
+  };
+  input_audio?: {
+    data: string;
+    format?: string;
   };
 }
 
@@ -139,6 +153,7 @@ export type AnthropicContent =
   // A document is an image block by another name on the wire: same inline
   // source, and the upstream transport has one representation for both.
   | { type: 'document'; source: AnthropicImageSource; title?: string }
+  | { type: 'audio'; source: AnthropicImageSource }
   | {
       type: 'tool_use';
       id: string;

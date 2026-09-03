@@ -42,6 +42,7 @@ function createStore(accounts: CloudAccount[]): AccountLeaseAccountStore {
     getAccount: vi.fn(),
     updateToken: vi.fn(),
     updateQuota: vi.fn(),
+    mutateHealth: vi.fn(),
   };
 }
 
@@ -113,6 +114,32 @@ describe('AccountLeaseTokenCache', () => {
       'Failed to load cloud accounts into token cache',
       expect.any(Error),
     );
+  });
+
+  it('keeps validation deadlines in cache but excludes durable OAuth blocks', async () => {
+    const store = createStore([
+      createAccount({
+        id: 'validation-blocked',
+        health: {
+          validation: {
+            status: 'requires_action',
+            reason: 'VALIDATION_REQUIRED',
+            detected_at_ms: 1,
+            next_probe_at_ms: 2,
+          },
+        },
+      }),
+      createAccount({
+        id: 'oauth-blocked',
+        health: { oauth: { refresh_blocked: true, reason: 'invalid_grant' } },
+      }),
+      createAccount({ id: 'healthy' }),
+    ]);
+    const { cache, tokenCache } = createTokenCache(store);
+
+    await expect(cache.loadAccounts()).resolves.toBe(2);
+    expect(Array.from(tokenCache.keys())).toEqual(['validation-blocked', 'healthy']);
+    expect(tokenCache.get('validation-blocked')?.validation_blocked_until_ms).toBe(2);
   });
 
   it('rethrows account storage failures through the strict reload boundary', async () => {

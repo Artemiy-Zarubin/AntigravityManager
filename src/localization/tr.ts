@@ -459,6 +459,7 @@ const tr = {
       validationRiskControlled: 'Risk / Hız Sınırı',
       validationOAuthReauthRequired: 'OAuth Yeniden Yetkilendirme Gerekiyor',
       validationRequired: 'Doğrulama Gerekiyor',
+      completeValidation: 'Doğrulamayı tamamla',
       left: 'kaldı',
       used: 'Kullanılan',
       unknown: 'Bilinmeyen Kullanıcı',

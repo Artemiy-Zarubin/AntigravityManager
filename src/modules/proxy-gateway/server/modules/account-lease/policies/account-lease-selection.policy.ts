@@ -59,6 +59,14 @@ export class AccountLeaseSelectionPolicy {
     this.sessionBindings.clear();
   }
 
+  clearAccountSessions(accountId: string): void {
+    for (const [sessionKey, binding] of this.sessionBindings) {
+      if (binding.accountId === accountId) {
+        this.sessionBindings.delete(sessionKey);
+      }
+    }
+  }
+
   resetSelectionState(): void {
     this.currentIndex = 0;
   }

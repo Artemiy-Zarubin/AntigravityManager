@@ -493,6 +493,7 @@ const zhCn = {
       validationRiskControlled: '风控 / 限流',
       validationOAuthReauthRequired: '需要重新 OAuth 授权',
       validationRequired: '需要校验',
+      completeValidation: '完成验证',
       left: '剩余',
       used: '已用',
       unknown: '未知用户',

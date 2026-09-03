@@ -89,12 +89,18 @@ vi.mock('../../shared/logging/logger', () => ({
   },
 }));
 
-vi.mock('@/modules/cloud-account/services/GoogleAPIService', () => ({
-  GoogleAPIService: {
-    getUserInfo: vi.fn(),
-    refreshAccessToken: vi.fn(),
-  },
-}));
+vi.mock('@/modules/cloud-account/services/GoogleAPIService', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@/modules/cloud-account/services/GoogleAPIService')>();
+  return {
+    ...original,
+    GoogleAPIService: {
+      ...original.GoogleAPIService,
+      getUserInfo: vi.fn(),
+      refreshAccessToken: vi.fn(),
+    },
+  };
+});
 
 vi.mock('@/modules/cloud-account/persistence/antigravityCredentialStore', () => ({
   readAntigravityCredentialStoreToken: vi.fn(() => null),
@@ -811,6 +817,13 @@ describe('IdeAccountImportAdapter.syncFromIde', () => {
         token_type: 'Bearer',
         email: 'existing@example.com',
       },
+      health: {
+        oauth: {
+          refresh_blocked: true,
+          invalid_grant_count: 2,
+          reason: 'invalid_grant' as const,
+        },
+      },
       created_at: 1700000000,
       last_used: 1700000000,
       status: 'active' as const,
@@ -852,9 +865,220 @@ describe('IdeAccountImportAdapter.syncFromIde', () => {
         email: 'existing@example.com',
         name: 'Renamed',
         token: existingAccount.token,
+        health: existingAccount.health,
         last_used: existingAccount.last_used,
       }),
     );
+  });
+
+  it('clears only OAuth health when imported credentials replace a blocked account token', async () => {
+    vi.resetModules();
+    const validation = {
+      status: 'requires_action' as const,
+      reason: 'VALIDATION_REQUIRED' as const,
+      detected_at_ms: 1,
+      next_probe_at_ms: 2,
+    };
+    const existingAccount = {
+      id: 'existing-id',
+      provider: 'google' as const,
+      email: 'existing@example.com',
+      token: {
+        access_token: 'old-access',
+        refresh_token: 'old-refresh',
+        expires_in: 3600,
+        expiry_timestamp: 1700000000,
+        token_type: 'Bearer',
+      },
+      health: {
+        validation,
+        oauth: {
+          refresh_blocked: true,
+          invalid_grant_count: 2,
+          reason: 'invalid_grant' as const,
+        },
+      },
+      created_at: 1700000000,
+      last_used: 1700000000,
+      status: 'expired' as const,
+      status_reason: 'Repeated OAuth invalid_grant responses require account reauthorization',
+      is_active: false,
+    };
+    const { CloudAccountRepo: RepoWithMock } =
+      await import('@/modules/cloud-account/persistence/cloudHandler');
+    vi.spyOn(RepoWithMock, 'getAccounts').mockResolvedValue([existingAccount]);
+    const addAccountSpy = vi.spyOn(RepoWithMock, 'addAccount').mockResolvedValue();
+    const { CloudAccountRefreshService: RefreshServiceWithMock } =
+      await import('@/modules/cloud-account/services/CloudAccountRefreshService');
+    const clearFailureStateSpy = vi
+      .spyOn(RefreshServiceWithMock, 'clearFailureState')
+      .mockResolvedValue();
+    const { importCloudAccounts } = await import('@/modules/cloud-account/ipc/handler');
+
+    const result = await importCloudAccounts(
+      JSON.stringify({
+        version: '1.0',
+        exportedAt: 1700000000,
+        accounts: [
+          {
+            provider: 'google',
+            email: 'existing@example.com',
+            token: {
+              access_token: 'replacement-access',
+              refresh_token: 'replacement-refresh',
+              expires_in: 3600,
+              expiry_timestamp: 1800000000,
+              token_type: 'Bearer',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({ updated: 1, errors: [] });
+    expect(addAccountSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: expect.objectContaining({ access_token: 'replacement-access' }),
+        health: { validation },
+        status: 'active',
+        status_reason: undefined,
+      }),
+    );
+    expect(clearFailureStateSpy).toHaveBeenCalledWith('existing-id');
+  });
+
+  it('keeps a durable OAuth block when an unchanged exported refresh grant is reimported', async () => {
+    vi.resetModules();
+    const existingAccount = {
+      id: 'blocked-id',
+      provider: 'google' as const,
+      email: 'blocked@example.com',
+      token: {
+        access_token: 'blocked-access',
+        refresh_token: 'revoked-refresh-grant',
+        expires_in: 3600,
+        expiry_timestamp: 1700000000,
+        token_type: 'Bearer',
+      },
+      health: {
+        oauth: {
+          refresh_blocked: true,
+          invalid_grant_count: 2,
+          reason: 'invalid_grant' as const,
+        },
+      },
+      created_at: 1700000000,
+      last_used: 1700000000,
+      status: 'expired' as const,
+      status_reason: 'Repeated OAuth invalid_grant responses require account reauthorization',
+      is_active: false,
+    };
+    const { CloudAccountRepo: RepoWithMock } =
+      await import('@/modules/cloud-account/persistence/cloudHandler');
+    vi.spyOn(RepoWithMock, 'getAccounts').mockResolvedValue([existingAccount]);
+    const addAccountSpy = vi.spyOn(RepoWithMock, 'addAccount').mockResolvedValue();
+    const { CloudAccountRefreshService: RefreshServiceWithMock } =
+      await import('@/modules/cloud-account/services/CloudAccountRefreshService');
+    const clearFailureStateSpy = vi
+      .spyOn(RefreshServiceWithMock, 'clearFailureState')
+      .mockResolvedValue();
+    const { exportCloudAccounts, importCloudAccounts } =
+      await import('@/modules/cloud-account/ipc/handler');
+
+    const exported = await exportCloudAccounts(false);
+    expect(JSON.parse(exported).accounts[0]).not.toHaveProperty('health');
+
+    const result = await importCloudAccounts(exported, 'overwrite');
+
+    expect(result).toMatchObject({ updated: 1, errors: [] });
+    expect(addAccountSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        health: existingAccount.health,
+        status: 'expired',
+        status_reason: existingAccount.status_reason,
+      }),
+    );
+    expect(clearFailureStateSpy).not.toHaveBeenCalled();
+  });
+
+  it('treats the first confirmed invalid_grant as retryable during manual quota refresh and switch messaging', async () => {
+    vi.resetModules();
+    const account = {
+      id: 'first-strike-id',
+      provider: 'google' as const,
+      email: 'first-strike@example.com',
+      token: {
+        access_token: 'expired-access',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+        expiry_timestamp: 1,
+        token_type: 'Bearer',
+      },
+      created_at: 1,
+      last_used: 1,
+      status: 'active' as const,
+      is_active: false,
+    };
+    const { CloudAccountRepo: RepoWithMock } =
+      await import('@/modules/cloud-account/persistence/cloudHandler');
+    vi.spyOn(RepoWithMock, 'getAccount').mockResolvedValue(account);
+    const statusSpy = vi.spyOn(RepoWithMock, 'setAccountStatus').mockResolvedValue();
+    const { OAuthTokenRefreshError: RefreshError } =
+      await import('@/modules/cloud-account/services/GoogleAPIService');
+    const refreshError = new RefreshError('invalid_grant', 400, 'default', 'expired or revoked');
+    const { CloudAccountRefreshService: RefreshServiceWithMock } =
+      await import('@/modules/cloud-account/services/CloudAccountRefreshService');
+    vi.spyOn(RefreshServiceWithMock, 'refreshAccessToken').mockRejectedValue(refreshError);
+    const { formatSwitchRefreshError, refreshAccountQuota } =
+      await import('@/modules/cloud-account/ipc/handler');
+
+    await expect(refreshAccountQuota('first-strike-id')).rejects.toBe(refreshError);
+    expect(statusSpy).not.toHaveBeenCalledWith('first-strike-id', 'expired', expect.anything());
+    expect(formatSwitchRefreshError(refreshError)).toContain('Retry later');
+    expect(formatSwitchRefreshError(refreshError)).not.toContain('re-login');
+  });
+
+  it('marks manual refresh as reauthorization-required only after the coordinator blocks it', async () => {
+    vi.resetModules();
+    const account = {
+      id: 'blocked-id',
+      provider: 'google' as const,
+      email: 'blocked@example.com',
+      token: {
+        access_token: 'expired-access',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+        expiry_timestamp: 1,
+        token_type: 'Bearer',
+      },
+      created_at: 1,
+      last_used: 1,
+      status: 'active' as const,
+      is_active: false,
+    };
+    const { CloudAccountRepo: RepoWithMock } =
+      await import('@/modules/cloud-account/persistence/cloudHandler');
+    vi.spyOn(RepoWithMock, 'getAccount').mockResolvedValue(account);
+    const statusSpy = vi.spyOn(RepoWithMock, 'setAccountStatus').mockResolvedValue();
+    const {
+      CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+      CloudAccountRefreshBlockedError,
+      CloudAccountRefreshService: RefreshServiceWithMock,
+    } = await import('@/modules/cloud-account/services/CloudAccountRefreshService');
+    const refreshError = new CloudAccountRefreshBlockedError('blocked-id');
+    vi.spyOn(RefreshServiceWithMock, 'refreshAccessToken').mockRejectedValue(refreshError);
+    const { formatSwitchRefreshError, refreshAccountQuota } =
+      await import('@/modules/cloud-account/ipc/handler');
+
+    await expect(refreshAccountQuota('blocked-id')).rejects.toMatchObject({
+      code: 'CLOUD_ACCOUNT_LOGIN_EXPIRED',
+    });
+    expect(statusSpy).toHaveBeenCalledWith(
+      'blocked-id',
+      'expired',
+      CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+    );
+    expect(formatSwitchRefreshError(refreshError)).toContain('re-login');
   });
 
   it('should keep pre-2.0 product versions out of the credential store', async () => {

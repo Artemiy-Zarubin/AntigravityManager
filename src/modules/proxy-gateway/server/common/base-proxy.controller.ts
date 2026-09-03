@@ -1,4 +1,4 @@
-import { HttpStatus, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import { isFunction, isObjectLike, isString } from 'lodash-es';
 import { Observable } from 'rxjs';
@@ -155,6 +155,9 @@ export abstract class BaseProxyController {
   }
 
   private resolveErrorHttpStatus(message: string, error?: unknown): HttpStatus {
+    if (error instanceof HttpException) {
+      return error.getStatus() as HttpStatus;
+    }
     if (
       error instanceof UpstreamRequestError &&
       Number.isInteger(error.status) &&

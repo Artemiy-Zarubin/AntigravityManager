@@ -35,6 +35,11 @@ export interface ProxyRetryAccountLeaseService {
   }): Promise<void>;
   getRemainingRateLimitWait(accountIdOrEmail: string, model?: string): number;
   markModelSuccess(accountIdOrEmail: string, model: string): void;
+  markValidationRequired?(params: {
+    accountId: string;
+    verificationUrl?: string;
+    description?: string;
+  }): Promise<void>;
 }
 
 export interface ProxyRetryLogger {
@@ -166,7 +171,7 @@ export class ProxyRetryService {
         this.persistModelRateLimit(accountId, model, error.body ?? error.message, status);
         return;
       }
-      if (status === 403 && this.isRecoverableForbidden(accountId, error)) {
+      if (status === 403 && (await this.handleRecoverableForbidden(accountId, error))) {
         return;
       }
       if (status === 401 || status === 403) {
@@ -216,31 +221,36 @@ export class ProxyRetryService {
   }
 
   /**
-   * Identity verification and VPC Service Controls failures say nothing about the credential, so
-   * the account stays in rotation. Location and license eligibility failures are durable for the
-   * current account and must rotate just like an unclassified forbidden response.
+   * Identity verification temporarily quarantines an account, while VPC Service Controls failures
+   * say nothing about the credential and stay in rotation. Location and license eligibility
+   * failures are durable for the current account and rotate like an unclassified forbidden response.
    */
-  private isRecoverableForbidden(accountId: string, error: UpstreamRequestError): boolean {
+  private async handleRecoverableForbidden(
+    accountId: string,
+    error: UpstreamRequestError,
+  ): Promise<boolean> {
     const classification = classifyForbiddenUpstreamError({
       body: error.body,
       details: error.details,
       message: error.message,
     });
-    if (
-      classification.kind !== 'validation_required' &&
-      classification.kind !== 'security_policy_violated'
-    ) {
+    if (classification.kind === 'validation_required') {
+      await this.accountLeaseService.markValidationRequired?.({
+        accountId,
+        verificationUrl: classification.validationLink,
+        description: classification.validationDescription,
+      });
+      this.logger.warn(
+        `Upstream 403 requires validation for account ${accountId}; quarantined for 10 minutes.`,
+      );
+      return true;
+    }
+    if (classification.kind !== 'security_policy_violated') {
       return false;
     }
 
-    const detail =
-      classification.kind === 'validation_required'
-        ? `validation required${
-            classification.validationLink ? ` (${classification.validationLink})` : ''
-          }`
-        : 'VPC Service Controls policy';
     this.logger.warn(
-      `Upstream 403 for account ${accountId} is recoverable (${detail}); keeping the account in rotation.`,
+      `Upstream 403 for account ${accountId} is recoverable (VPC Service Controls policy); keeping the account in rotation.`,
     );
     return true;
   }

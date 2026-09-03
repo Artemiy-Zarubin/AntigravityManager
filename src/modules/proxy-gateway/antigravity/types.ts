@@ -42,6 +42,16 @@ export interface JsonSchema {
   [key: string]: unknown;
 }
 
+export interface OpenAIResponseFormat {
+  type?: string;
+  json_schema?: {
+    name?: string;
+    description?: string;
+    schema: JsonSchema;
+    strict?: boolean;
+  };
+}
+
 // ============================================================================
 // Claude API Types (Claude Request/Response related types)
 // ============================================================================
@@ -70,7 +80,7 @@ export interface ClaudeRequest {
    * `generationConfig`. Declared on the client contract but dropped in the mapping until now,
    * which meant a client that asked for JSON and parsed the answer got prose.
    */
-  response_format?: { type?: string };
+  response_format?: OpenAIResponseFormat;
   metadata?: Metadata;
 }
 
@@ -97,6 +107,7 @@ export type ContentBlock =
   | ThinkingBlock
   | ImageBlock
   | DocumentBlock
+  | AudioBlock
   | ToolUseBlock
   | ToolResultBlock
   | RedactedThinkingBlock;
@@ -136,6 +147,15 @@ export interface DocumentBlock {
     data: string;
   };
   title?: string;
+}
+
+export interface AudioBlock {
+  type: 'audio';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
 }
 
 export interface ToolUseBlock {
@@ -216,6 +236,8 @@ export interface GenerationConfig {
   thinkingConfig?: ThinkingGeminiConfig;
   /** Response MIME type */
   responseMimeType?: string;
+  /** JSON Schema constraining structured output when supported upstream. */
+  responseSchema?: JsonSchema;
   /** Response modalities */
   responseModalities?: string[];
   /** Image generation configuration */

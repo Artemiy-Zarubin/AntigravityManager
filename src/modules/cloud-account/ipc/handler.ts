@@ -10,6 +10,7 @@ import {
 } from '@/modules/cloud-account/services/GoogleAPIService';
 import { CloudAccount, CloudAccountExportSchema } from '@/modules/cloud-account/types';
 import { logger } from '@/shared/logging/logger';
+import { normalizeTrustedGoogleValidationUrl } from '@/modules/cloud-account/utils/google-validation-url';
 
 import { shell } from 'electron';
 import fs from 'fs';
@@ -34,10 +35,19 @@ import type { DeviceProfile, DeviceProfilesSnapshot } from '@/modules/identity-p
 import {
   classifyAccountStatusFromError,
   extractErrorMessage,
+  isOAuthReauthReason,
 } from '@/modules/cloud-account/utils/account-status';
 import { withTimingTrace } from '@/shared/observability/timingTrace';
 import { AppError } from '@/shared/errors/appError';
 import { CloudMonitorService } from '@/modules/cloud-account/services/CloudMonitorService';
+import {
+  CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+  CloudAccountRefreshBlockedError,
+  CloudAccountRefreshService,
+  createCloudAccountRefreshRequest,
+  isRetryableInvalidGrantRefreshError,
+} from '@/modules/cloud-account/services/CloudAccountRefreshService';
+import { clearValidationHealthAfterSuccessfulProbe } from '@/modules/cloud-account/services/CloudAccountHealthService';
 
 // Helper to update tray
 function notifyTrayUpdate(account: CloudAccount) {
@@ -79,6 +89,22 @@ function mergeRefreshedToken(
   };
 }
 
+/**
+ * An imported access-token snapshot is not proof of reauthorization: exports intentionally
+ * include it, so accepting the same refresh grant again must not lift a durable OAuth block.
+ */
+function replacesRefreshGrant(
+  currentToken: CloudAccount['token'],
+  importedToken: CloudAccount['token'] | undefined,
+): boolean {
+  if (!importedToken) {
+    return false;
+  }
+
+  const importedRefreshToken = importedToken.refresh_token.trim();
+  return importedRefreshToken !== '' && importedRefreshToken !== currentToken.refresh_token.trim();
+}
+
 function isEnterpriseClient(clientKey?: string): boolean {
   if (!clientKey) {
     return false;
@@ -108,7 +134,15 @@ function recoverCachedQuotaOnRateLimit(
   return account.quota;
 }
 
-function formatSwitchRefreshError(reason: string): string {
+export function formatSwitchRefreshError(error: unknown): string {
+  if (isRetryableInvalidGrantRefreshError(error)) {
+    return 'Token refresh was rejected after confirmation. Retry later before reauthorizing the account.';
+  }
+  if (error instanceof CloudAccountRefreshBlockedError) {
+    return 'Token refresh failed repeatedly. Please re-login and complete authorization.';
+  }
+
+  const reason = extractErrorMessage(error);
   const normalized = reason.toLowerCase();
   if (
     normalized.includes('unauthorized_client') ||
@@ -173,6 +207,20 @@ async function ensureEnterpriseProjectReady(account: CloudAccount): Promise<void
 }
 
 async function markAccountStatusFromError(account: CloudAccount, error: unknown): Promise<void> {
+  if (isRetryableInvalidGrantRefreshError(error)) {
+    return;
+  }
+  if (error instanceof CloudAccountRefreshBlockedError) {
+    account.status = 'expired';
+    account.status_reason = CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON;
+    await CloudAccountRepo.setAccountStatus(
+      account.id,
+      'expired',
+      CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+    );
+    return;
+  }
+
   const classified = classifyAccountStatusFromError(error);
   if (!classified) {
     return;
@@ -334,6 +382,7 @@ export async function addGoogleAccount(
     }
 
     await CloudAccountRepo.addAccount(account);
+    await CloudAccountRefreshService.clearFailureState(account.id);
 
     try {
       const quota = await GoogleAPIService.fetchQuota(account.token.access_token);
@@ -427,6 +476,20 @@ export async function deleteCloudAccount(accountId: string): Promise<void> {
   await CloudAccountRepo.removeAccount(accountId);
 }
 
+export async function openAccountValidationLink(accountId: string): Promise<void> {
+  const account = await CloudAccountRepo.getAccount(accountId);
+  if (!account) {
+    throw new Error(`Account not found: ${accountId}`);
+  }
+  const validationUrl = normalizeTrustedGoogleValidationUrl(
+    account.health?.validation?.verification_url,
+  );
+  if (!validationUrl) {
+    throw new Error('No trusted validation URL is available for this account');
+  }
+  await shell.openExternal(validationUrl);
+}
+
 export async function refreshAccountQuota(accountId: string): Promise<CloudAccount> {
   const account = await CloudAccountRepo.getAccount(accountId);
   if (!account) {
@@ -437,10 +500,8 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
   if (account.token.expiry_timestamp < now + 300) {
     logger.info(`Token for ${account.email} near expiry, refreshing...`);
     try {
-      const refreshedToken = await GoogleAPIService.refreshAccessToken(
-        account.token.refresh_token,
-        account.proxy_url,
-        account.token.oauth_client_key,
+      const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
+        createCloudAccountRefreshRequest(account),
       );
 
       account.token = mergeRefreshedToken(account.token, refreshedToken, now);
@@ -451,6 +512,9 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
         error,
       );
       await markAccountStatusFromError(account, error);
+      if (isRetryableInvalidGrantRefreshError(error)) {
+        throw error;
+      }
       throw new AppError('CLOUD_ACCOUNT_LOGIN_EXPIRED', 'Cloud account login expired', {
         messageKey: 'error.cloudAccountLoginExpired',
         reportToSentry: false,
@@ -493,6 +557,7 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
     await CloudAccountRepo.updateLastUsed(account.id);
     account.last_used = Math.floor(Date.now() / 1000);
     await clearAccountStatus(account);
+    await clearValidationHealthAfterSuccessfulProbe(account);
     proxyModelAvailabilityStore.clearCapabilityFailures(account.id);
     notifyTrayUpdate(account);
     CloudMonitorService.scheduleWeeklyWarmup([account]);
@@ -501,10 +566,8 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
     if (error.message === 'UNAUTHORIZED') {
       logger.warn(`Received 401 Unauthorized for ${account.email}; forcing token refresh`);
       try {
-        const refreshedToken = await GoogleAPIService.refreshAccessToken(
-          account.token.refresh_token,
-          account.proxy_url,
-          account.token.oauth_client_key,
+        const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
+          createCloudAccountRefreshRequest(account),
         );
         now = Math.floor(Date.now() / 1000);
 
@@ -542,6 +605,7 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
         await CloudAccountRepo.updateLastUsed(account.id);
         account.last_used = Math.floor(Date.now() / 1000);
         await clearAccountStatus(account);
+        await clearValidationHealthAfterSuccessfulProbe(account);
         proxyModelAvailabilityStore.clearCapabilityFailures(account.id);
         CloudMonitorService.scheduleWeeklyWarmup([account]);
         return account;
@@ -638,10 +702,8 @@ export async function switchCloudAccount(
 
             logger.info(`Refreshing token for ${account.email} before IDE injection...`);
             try {
-              const refreshedToken = await GoogleAPIService.refreshAccessToken(
-                account.token.refresh_token,
-                account.proxy_url,
-                account.token.oauth_client_key,
+              const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
+                createCloudAccountRefreshRequest(account),
               );
 
               const updatedToken = mergeRefreshedToken(account.token, refreshedToken, now);
@@ -652,8 +714,7 @@ export async function switchCloudAccount(
             } catch (error) {
               logger.warn('Failed to refresh token before IDE injection', error);
               await markAccountStatusFromError(account, error);
-              const reason = extractErrorMessage(error);
-              throw new Error(formatSwitchRefreshError(reason));
+              throw new Error(formatSwitchRefreshError(error));
             }
           })();
 
@@ -949,6 +1010,19 @@ export async function importCloudAccounts(
           continue;
         }
 
+        const replacesStoredRefreshGrant = replacesRefreshGrant(
+          existing.token,
+          importedAccount.token,
+        );
+        const preservesBlockedAccountStatus =
+          !replacesStoredRefreshGrant && existing.health?.oauth?.refresh_blocked === true;
+        const shouldResetOAuthStatus =
+          replacesStoredRefreshGrant &&
+          existing.status === 'expired' &&
+          isOAuthReauthReason(existing.status_reason ?? '');
+        const recoveredHealth = existing.health?.validation
+          ? { validation: existing.health.validation }
+          : undefined;
         const updatedAccount: CloudAccount = {
           ...existing,
           provider: importedAccount.provider,
@@ -956,14 +1030,26 @@ export async function importCloudAccounts(
           avatar_url: importedAccount.avatar_url ?? existing.avatar_url,
           token: importedAccount.token ?? existing.token,
           quota: importedAccount.quota ?? existing.quota,
+          health: replacesStoredRefreshGrant ? recoveredHealth : existing.health,
           device_profile: importedAccount.device_profile ?? existing.device_profile,
           device_history: importedAccount.device_history ?? existing.device_history,
           proxy_url: importedAccount.proxy_url ?? existing.proxy_url,
-          status: importedAccount.status ?? existing.status,
-          status_reason: importedAccount.status_reason ?? existing.status_reason,
+          status: shouldResetOAuthStatus
+            ? 'active'
+            : preservesBlockedAccountStatus
+              ? existing.status
+              : (importedAccount.status ?? existing.status),
+          status_reason: shouldResetOAuthStatus
+            ? undefined
+            : preservesBlockedAccountStatus
+              ? existing.status_reason
+              : (importedAccount.status_reason ?? existing.status_reason),
         };
 
         await CloudAccountRepo.addAccount(updatedAccount);
+        if (replacesStoredRefreshGrant) {
+          await CloudAccountRefreshService.clearFailureState(existing.id);
+        }
         result.updated++;
       } else {
         if (!importedAccount.token) {

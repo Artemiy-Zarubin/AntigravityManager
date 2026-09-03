@@ -87,6 +87,10 @@ export class GeminiService extends BaseProxyService {
 
       const token = await this.selectRetryToken(retryState, targetModel);
       if (!token) {
+        if (lastError !== null) {
+          throw lastError;
+        }
+
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       const effectiveTargetModel = this.accountLeaseService.resolveDynamicModelForAccount(
@@ -181,6 +185,10 @@ export class GeminiService extends BaseProxyService {
 
       const token = await this.selectRetryToken(retryState, targetModel);
       if (!token) {
+        if (lastError !== null) {
+          throw lastError;
+        }
+
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       const effectiveTargetModel = this.accountLeaseService.resolveDynamicModelForAccount(

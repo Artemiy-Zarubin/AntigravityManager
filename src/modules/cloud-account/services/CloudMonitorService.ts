@@ -2,6 +2,14 @@ import { Notification } from 'electron';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
 import { CloudAccountSettingsStore } from '@/modules/cloud-account/persistence/cloud-account-settings-store';
 import { GoogleAPIService, type QuotaData, type TokenResponse } from './GoogleAPIService';
+import {
+  CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+  CloudAccountRefreshBlockedError,
+  CloudAccountRefreshService,
+  createCloudAccountRefreshRequest,
+  isRetryableInvalidGrantRefreshError,
+} from './CloudAccountRefreshService';
+import { clearValidationHealthAfterSuccessfulProbe } from './CloudAccountHealthService';
 import { AutoSwitchService } from './AutoSwitchService';
 import { logger } from '@/shared/logging/logger';
 import { classifyAccountStatusFromError } from '@/modules/cloud-account/utils/account-status';
@@ -64,6 +72,28 @@ const CLOUD_MONITOR_NOTIFICATION_TEXT: Record<
 const AUTO_SWITCH_TARGETS: AntigravityAppTarget[] = AntigravityAppTargetSchema.options.filter(
   (target) => target !== 'agy',
 );
+
+async function persistMonitorAccountStatusFromError(
+  accountId: string,
+  error: unknown,
+): Promise<void> {
+  if (isRetryableInvalidGrantRefreshError(error)) {
+    return;
+  }
+  if (error instanceof CloudAccountRefreshBlockedError) {
+    await CloudAccountRepo.setAccountStatus(
+      accountId,
+      'expired',
+      CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+    );
+    return;
+  }
+
+  const classified = classifyAccountStatusFromError(error);
+  if (classified) {
+    await CloudAccountRepo.setAccountStatus(accountId, classified.status, classified.reason);
+  }
+}
 
 function getCloudMonitorLanguage(language: string | null | undefined): CloudMonitorLanguage {
   const normalizedLanguage = language?.toLowerCase() ?? 'en';
@@ -261,6 +291,12 @@ export class CloudMonitorService {
 
     for (const account of accounts) {
       try {
+        if (account.health?.oauth?.refresh_blocked) {
+          continue;
+        }
+        if (account.health?.validation && Date.now() < account.health.validation.next_probe_at_ms) {
+          continue;
+        }
         now = Math.floor(Date.now() / 1000);
         // 1. Check/Refresh Token if needed (give it a 10 min buffer here for safety)
         let accessToken = account.token.access_token;
@@ -282,24 +318,15 @@ export class CloudMonitorService {
           } else {
             logger.info(`Monitor: Refreshing token for ${account.email}`);
             try {
-              const newToken = await GoogleAPIService.refreshAccessToken(
-                account.token.refresh_token,
-                account.proxy_url,
-                account.token.oauth_client_key,
+              const newToken = await CloudAccountRefreshService.refreshAccessToken(
+                createCloudAccountRefreshRequest(account),
               );
               account.token = mergeRefreshedToken(account.token, newToken, now);
               await CloudAccountRepo.updateToken(account.id, account.token);
               accessToken = newToken.access_token;
             } catch (refreshError) {
               logger.error(`Monitor: Token refresh failed for ${account.email}`, refreshError);
-              const classified = classifyAccountStatusFromError(refreshError);
-              if (classified) {
-                await CloudAccountRepo.setAccountStatus(
-                  account.id,
-                  classified.status,
-                  classified.reason,
-                );
-              }
+              await persistMonitorAccountStatusFromError(account.id, refreshError);
               continue;
             }
           }
@@ -327,10 +354,8 @@ export class CloudMonitorService {
                 `Monitor: Received 401 Unauthorized while fetching credits for ${account.email}; forcing token refresh and retry`,
               );
               try {
-                const refreshedToken = await GoogleAPIService.refreshAccessToken(
-                  account.token.refresh_token,
-                  account.proxy_url,
-                  account.token.oauth_client_key,
+                const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
+                  createCloudAccountRefreshRequest(account),
                 );
                 now = Math.floor(Date.now() / 1000);
                 account.token = mergeRefreshedToken(account.token, refreshedToken, now);
@@ -351,6 +376,7 @@ export class CloudMonitorService {
                   `Monitor: Failed to fetch credits for ${account.email} after token refresh`,
                   retryError,
                 );
+                await persistMonitorAccountStatusFromError(account.id, retryError);
                 if (previousAICredits) {
                   quota.ai_credits = previousAICredits;
                 }
@@ -367,10 +393,8 @@ export class CloudMonitorService {
             logger.warn(
               `Monitor: Received 401 Unauthorized for ${account.email}; forcing token refresh and retry`,
             );
-            const refreshedToken = await GoogleAPIService.refreshAccessToken(
-              account.token.refresh_token,
-              account.proxy_url,
-              account.token.oauth_client_key,
+            const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
+              createCloudAccountRefreshRequest(account),
             );
             now = Math.floor(Date.now() / 1000);
             account.token = mergeRefreshedToken(account.token, refreshedToken, now);
@@ -408,15 +432,18 @@ export class CloudMonitorService {
         await CloudAccountRepo.updateQuota(account.id, quota);
         account.quota = quota;
         await CloudAccountRepo.setAccountStatus(account.id, 'active', null);
+        await clearValidationHealthAfterSuccessfulProbe(account);
         account.status = 'active';
         account.status_reason = undefined;
         refreshedAccounts.push(account);
         proxyModelAvailabilityStore.clearCapabilityFailures(account.id);
       } catch (error) {
         logger.error(`Monitor: Failed to update ${account.email}`, error);
-        const classified = classifyAccountStatusFromError(error);
+        await persistMonitorAccountStatusFromError(account.id, error);
+        const classified = isRetryableInvalidGrantRefreshError(error)
+          ? null
+          : classifyAccountStatusFromError(error);
         if (classified) {
-          await CloudAccountRepo.setAccountStatus(account.id, classified.status, classified.reason);
           if (classified.status === 'rate_limited' && hasReusableCachedQuota(account)) {
             logger.warn(
               `Monitor: Quota request rate-limited for ${account.email}, keeping cached quota as fallback.`,

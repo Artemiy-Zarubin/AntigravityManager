@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
-import { CloudAccount } from '@/modules/cloud-account/types';
+import type { CloudAccount, CloudAccountHealth } from '@/modules/cloud-account/types';
 import { RateLimitTrackerService } from '../../shared/services/rate-limit-tracker.service';
 import {
   ACCOUNT_LEASE_ACCOUNT_STORE,
@@ -11,7 +11,10 @@ import {
 } from './interfaces/account-lease-adapters';
 import { AccountLeaseQuotaRefreshPolicy } from './policies/account-lease-quota-refresh.policy';
 import { AccountLeaseTokenCache } from './stores/account-lease-token.store';
-import { AccountLeaseHydrationPolicy } from './policies/account-lease-hydration.policy';
+import {
+  AccountLeaseHydrationPolicy,
+  AccountLeaseRefreshRejectedError,
+} from './policies/account-lease-hydration.policy';
 import { AccountLeaseFulfillmentPolicy } from './policies/account-lease-fulfillment.policy';
 import { AccountLeaseSelectionPolicy } from './policies/account-lease-selection.policy';
 import { AccountLeaseModelPolicy } from './policies/account-lease-model.policy';
@@ -24,6 +27,7 @@ import {
   type AccountLeaseUpstreamErrorParams,
 } from './policies/account-lease-limit.policy';
 import { AccountLeaseConfigPolicy } from './policies/account-lease-config.policy';
+import { normalizeTrustedGoogleValidationUrl } from '@/modules/cloud-account/utils/google-validation-url';
 
 interface GetNextTokenOptions {
   sessionKey?: string;
@@ -156,6 +160,20 @@ export class AccountLeaseService implements OnModuleInit {
     this.selectionPolicy.clearSessions();
   }
 
+  evictAccount(accountId: string): boolean {
+    this.selectionPolicy.clearAccountSessions(accountId);
+    return this.tokens.delete(accountId);
+  }
+
+  updateAccountOAuthHealth(accountId: string, oauthHealth: CloudAccountHealth['oauth']): boolean {
+    const tokenData = this.tokens.get(accountId);
+    if (!tokenData) {
+      return false;
+    }
+    tokenData.oauth_health = oauthHealth;
+    return true;
+  }
+
   clearAllRateLimits(): void {
     this.limitPolicy.clearAllRateLimits();
   }
@@ -196,6 +214,34 @@ export class AccountLeaseService implements OnModuleInit {
     await this.limitPolicy.markFromUpstreamError(params);
   }
 
+  async markValidationRequired(params: {
+    accountId: string;
+    verificationUrl?: string;
+    description?: string;
+  }): Promise<void> {
+    const now = Date.now();
+    const nextProbeAt = now + 10 * 60 * 1000;
+    const updateHealth = (health: CloudAccount['health']): CloudAccount['health'] => ({
+      ...health,
+      validation: {
+        status: 'requires_action',
+        reason: 'VALIDATION_REQUIRED',
+        detected_at_ms: now,
+        next_probe_at_ms: nextProbeAt,
+        verification_url: normalizeTrustedGoogleValidationUrl(params.verificationUrl),
+        description: params.description?.trim().slice(0, 500) || undefined,
+      },
+    });
+
+    await this.accountStore.mutateHealth(params.accountId, updateHealth);
+
+    const tokenData = this.tokens.get(params.accountId);
+    if (tokenData) {
+      tokenData.validation_blocked_until_ms = nextProbeAt;
+    }
+    this.selectionPolicy.clearAccountSessions(params.accountId);
+  }
+
   async getNextToken(options?: GetNextTokenOptions): Promise<CloudAccount | null> {
     try {
       if (this.tokens.size === 0) {
@@ -213,7 +259,11 @@ export class AccountLeaseService implements OnModuleInit {
 
       this.rateLimitTracker.cleanupExpired();
 
-      const fullAccountPool = Array.from(this.tokens.entries());
+      const fullAccountPool = Array.from(this.tokens.entries()).filter(
+        ([, tokenData]) =>
+          tokenData.validation_blocked_until_ms === undefined ||
+          now >= tokenData.validation_blocked_until_ms,
+      );
       const modelCapableAccountPool = this.selectModelCapableAccounts(fullAccountPool, model);
       if (modelCapableAccountPool.length === 0) {
         this.logger.warn(`No account advertises requested model: ${model ?? 'unknown'}`);
@@ -223,37 +273,44 @@ export class AccountLeaseService implements OnModuleInit {
       const filteredAccountPool = modelCapableAccountPool.filter(
         ([accountId]) => !excludedAccountIds.has(accountId),
       );
-      const candidateAccountPool =
-        filteredAccountPool.length > 0 ? filteredAccountPool : modelCapableAccountPool;
-
       if (filteredAccountPool.length === 0 && excludedAccountIds.size > 0) {
-        this.logger.warn(
-          'Exclusion filter removed all accounts; retrying with the full account pool',
-        );
+        this.logger.warn('Exclusion filter removed all accounts');
       }
 
-      if (candidateAccountPool.length === 0) {
+      if (filteredAccountPool.length === 0) {
         this.logger.warn('No eligible account found after exclusion filtering');
         return null;
       }
 
-      const selectedTokenEntry = await this.selectionPolicy.selectCandidate({
-        allTokens: candidateAccountPool,
-        sessionKey,
-        model,
-        now,
-        accountCooldowns: this.accountCooldowns,
-        rateLimitTracker: this.rateLimitTracker,
-        config: this.configPolicy.getSelectionConfig(),
-        logger: this.logger,
-      });
+      let remainingAccountPool = filteredAccountPool;
+      for (let attempt = 0; attempt < filteredAccountPool.length; attempt += 1) {
+        const selectedTokenEntry = await this.selectionPolicy.selectCandidate({
+          allTokens: remainingAccountPool,
+          sessionKey,
+          model,
+          now,
+          accountCooldowns: this.accountCooldowns,
+          rateLimitTracker: this.rateLimitTracker,
+          config: this.configPolicy.getSelectionConfig(),
+          logger: this.logger,
+        });
 
-      if (!selectedTokenEntry) {
-        return null;
+        if (!selectedTokenEntry) {
+          return null;
+        }
+
+        const [accountId, tokenData] = selectedTokenEntry;
+        try {
+          return await this.finalizeSelectedToken(accountId, tokenData, nowSeconds, sessionKey);
+        } catch (error) {
+          if (!(error instanceof AccountLeaseRefreshRejectedError)) {
+            throw error;
+          }
+          remainingAccountPool = remainingAccountPool.filter(([id]) => id !== accountId);
+        }
       }
 
-      const [accountId, tokenData] = selectedTokenEntry;
-      return this.finalizeSelectedToken(accountId, tokenData, nowSeconds, sessionKey);
+      return null;
     } catch (error) {
       this.logger.error('Failed to select the next account token', error);
       return null;

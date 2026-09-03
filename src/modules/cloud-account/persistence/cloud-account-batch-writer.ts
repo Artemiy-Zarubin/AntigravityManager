@@ -34,6 +34,7 @@ export async function upsertCloudAccountsAtomically(
         avatarUrl: account.avatar_url ?? null,
         tokenJson: await encrypt(JSON.stringify(account.token)),
         quotaJson: account.quota ? await encrypt(JSON.stringify(account.quota)) : null,
+        healthJson: account.health ? await encrypt(JSON.stringify(account.health)) : null,
         deviceProfileJson: serializeDeviceProfile(account.device_profile),
         deviceHistoryJson: serializeDeviceHistory(account.device_history),
         createdAt: account.created_at,

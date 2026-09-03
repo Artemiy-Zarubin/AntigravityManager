@@ -3,6 +3,7 @@ import { Observable } from 'rxjs';
 
 import { OpenAIOperations } from '@/modules/proxy-gateway/server/modules/openai/openai-operations.service';
 import { proxyModelAvailabilityStore } from '@/modules/proxy-gateway/server/shared/services/model-availability.service';
+import { ProxyRetryService } from '@/modules/proxy-gateway/server/shared/services/proxy-retry.service';
 import { UpstreamRequestError } from '@/modules/proxy-gateway/server/common/exceptions/upstream-request.exception';
 import {
   collect,
@@ -161,7 +162,7 @@ describe('real request path, OpenAI chat surface', () => {
     });
   });
 
-  it('keeps a recoverable 403 account in rotation instead of burning it', async () => {
+  it('quarantines a trusted validation 403 and rotates to the next account', async () => {
     let attempt = 0;
     const upstream = createUpstream({
       generate: () => {
@@ -173,6 +174,15 @@ describe('real request path, OpenAI chat surface', () => {
                 domain: 'cloudcode-pa.googleapis.com',
                 reason: 'VALIDATION_REQUIRED',
                 type: 'type.googleapis.com/google.rpc.ErrorInfo',
+              },
+              {
+                links: [
+                  {
+                    description: 'Verify your account',
+                    url: 'https://accounts.google.com/verify',
+                  },
+                ],
+                type: 'type.googleapis.com/google.rpc.Help',
               },
             ],
             message: 'Permission denied',
@@ -195,5 +205,86 @@ describe('real request path, OpenAI chat surface', () => {
     );
 
     expect(lease.penalties).toEqual([]);
+    expect(lease.validationQuarantines).toEqual([
+      {
+        accountId: 'acc-1',
+        verificationUrl: 'https://accounts.google.com/verify',
+        description: 'Verify your account',
+      },
+    ]);
+    expect(upstream.calls.map((call) => call.accessToken)).toEqual([
+      'access-acc-1',
+      'access-acc-2',
+    ]);
+  });
+
+  it('returns the validation 403 when quarantine exhausts the account pool', async () => {
+    const upstreamError = new UpstreamRequestError({
+      details: [
+        {
+          domain: 'cloudcode-pa.googleapis.com',
+          reason: 'VALIDATION_REQUIRED',
+          type: 'type.googleapis.com/google.rpc.ErrorInfo',
+        },
+      ],
+      message: 'Permission denied',
+      status: 403,
+    });
+    const upstream = createUpstream({
+      generate: () => {
+        throw upstreamError;
+      },
+    });
+    const lease = createLease([createAccount('acc-1')]);
+    const controller = new OpenAIOperations(createGateway(upstream, lease).openAIService);
+    const reply = createReply();
+
+    await controller.chatCompletions(
+      {
+        messages: [{ content: 'hello', role: 'user' }],
+        model: 'gemini-3-flash',
+        stream: false,
+      } as never,
+      reply as never,
+    );
+
+    expect(lease.validationQuarantines).toEqual([expect.objectContaining({ accountId: 'acc-1' })]);
+    expect(reply.status).toHaveBeenCalledWith(403);
+  });
+
+  it('preserves the terminal upstream 403 when Gemini or Anthropic exhausts the pool', async () => {
+    const upstreamError = new UpstreamRequestError({
+      body: '{"error":{"status":"PERMISSION_DENIED"}}',
+      message: 'The caller does not have permission',
+      status: 403,
+    });
+    const upstream = createUpstream({
+      generate: () => {
+        throw upstreamError;
+      },
+    });
+    const lease = createLease([createAccount('acc-1')]);
+    const { anthropicService, geminiService } = createGateway(upstream, lease);
+    const waitBeforeRetry = vi
+      .spyOn(ProxyRetryService.prototype, 'waitBeforeRetry')
+      .mockResolvedValue(undefined);
+
+    try {
+      await expect(
+        geminiService.handleGeminiGenerateContent('gemini-3-flash', {
+          contents: [{ parts: [{ text: 'hello' }], role: 'user' }],
+        } as never),
+      ).rejects.toBe(upstreamError);
+      await expect(
+        anthropicService.handleAnthropicMessages({
+          max_tokens: 64,
+          messages: [{ content: 'hello', role: 'user' }],
+          model: 'gemini-3-flash',
+          stream: false,
+        } as never),
+      ).rejects.toBe(upstreamError);
+    } finally {
+      waitBeforeRetry.mockRestore();
+    }
   });
 });

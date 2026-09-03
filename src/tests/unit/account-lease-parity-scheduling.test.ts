@@ -3,6 +3,7 @@ import { DEFAULT_APP_CONFIG, ProxyConfig } from '@/modules/config/types';
 import { setServerConfig } from '../../server/server-config';
 import { AccountLeaseService } from '../../modules/proxy-gateway/server/modules/account-lease/account-lease.service';
 import { GoogleAPIService } from '@/modules/cloud-account/services/GoogleAPIService';
+import { CloudAccountHealthService } from '@/modules/cloud-account/services/CloudAccountHealthService';
 
 function createProxyConfig(overrides: Partial<ProxyConfig>): ProxyConfig {
   return {
@@ -53,6 +54,8 @@ describe('AccountLeaseService parity scheduling replay', () => {
   let service: AccountLeaseService;
 
   beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(CloudAccountHealthService, 'getHealth').mockResolvedValue(undefined);
     service = new AccountLeaseService();
     seedTokens(service);
   });
@@ -262,9 +265,9 @@ describe('AccountLeaseService parity scheduling replay', () => {
 
     const first = (service as any).finalizeSelectedToken('acc-1', tokenData, nowSec);
     const second = (service as any).finalizeSelectedToken('acc-1', tokenData, nowSec);
-    await Promise.resolve();
-
-    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+    });
     resolveRefresh?.();
 
     const selected = await Promise.all([first, second]);
@@ -365,7 +368,7 @@ describe('AccountLeaseService parity scheduling replay', () => {
     expect(otherModel?.id).toBe('acc-1');
   });
 
-  it('falls back to excluded pool when retry exclusions would empty all candidates', async () => {
+  it('does not fall back to accounts explicitly excluded by retry policy', async () => {
     setServerConfig(
       createProxyConfig({
         parity_enabled: false,
@@ -392,6 +395,6 @@ describe('AccountLeaseService parity scheduling replay', () => {
     ]);
 
     const token = await service.getNextToken({ excludeAccountIds: ['acc-1'] });
-    expect(token?.id).toBe('acc-1');
+    expect(token).toBeNull();
   });
 });

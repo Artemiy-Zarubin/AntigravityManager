@@ -471,6 +471,7 @@ const fr = {
       validationRiskControlled: 'Risque / limite par le debit',
       validationOAuthReauthRequired: 'Reauthentification OAuth requise',
       validationRequired: 'Verification requise',
+      completeValidation: 'Verifier',
       left: 'restant',
       used: 'Utilise',
       unknown: 'Utilisateur inconnu',

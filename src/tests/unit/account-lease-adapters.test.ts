@@ -28,6 +28,7 @@ describe('AccountLeaseService adapters', () => {
       getAccount: vi.fn().mockResolvedValue(account),
       updateToken: vi.fn().mockResolvedValue(undefined),
       updateQuota: vi.fn().mockResolvedValue(undefined),
+      mutateHealth: vi.fn(),
     };
     const upstream: AccountLeaseUpstream = {
       fetchQuota: vi.fn(),

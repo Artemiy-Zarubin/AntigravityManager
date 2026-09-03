@@ -4,6 +4,8 @@ import {
   GoogleAPIService,
   type TokenResponse,
 } from '@/modules/cloud-account/services/GoogleAPIService';
+import { CloudAccountRefreshService } from '@/modules/cloud-account/services/CloudAccountRefreshService';
+import { CloudAccountHealthService } from '@/modules/cloud-account/services/CloudAccountHealthService';
 
 export const ACCOUNT_LEASE_ACCOUNT_STORE = Symbol('ACCOUNT_LEASE_ACCOUNT_STORE');
 export const ACCOUNT_LEASE_UPSTREAM = Symbol('ACCOUNT_LEASE_UPSTREAM');
@@ -13,14 +15,20 @@ export interface AccountLeaseAccountStore {
   getAccount(accountId: string): Promise<CloudAccount | undefined>;
   updateToken(accountId: string, token: CloudAccount['token']): Promise<void>;
   updateQuota(accountId: string, quota: CloudQuotaData): Promise<void>;
+  mutateHealth(
+    accountId: string,
+    mutation: (health: CloudAccount['health']) => CloudAccount['health'],
+  ): Promise<CloudAccount['health']>;
 }
 
 export interface AccountLeaseUpstream {
   fetchQuota(accessToken: string, proxyUrl?: string): Promise<CloudQuotaData>;
   refreshAccessToken(
+    accountId: string,
     refreshToken: string,
     proxyUrl?: string,
     oauthClientKey?: string,
+    health?: CloudAccount['health'],
   ): Promise<TokenResponse>;
   fetchProjectId(accessToken: string, proxyUrl?: string): Promise<string | null>;
   normalizeRefreshedOAuthClientKey(
@@ -34,12 +42,20 @@ export const cloudAccountStoreAdapter: AccountLeaseAccountStore = {
   getAccount: (accountId) => CloudAccountRepo.getAccount(accountId),
   updateToken: (accountId, token) => CloudAccountRepo.updateToken(accountId, token),
   updateQuota: (accountId, quota) => CloudAccountRepo.updateQuota(accountId, quota),
+  mutateHealth: (accountId, mutation) =>
+    CloudAccountHealthService.mutateHealth(accountId, mutation),
 };
 
 export const googleAccountLeaseUpstreamAdapter: AccountLeaseUpstream = {
   fetchQuota: (accessToken, proxyUrl) => GoogleAPIService.fetchQuota(accessToken, proxyUrl),
-  refreshAccessToken: (refreshToken, proxyUrl, oauthClientKey) =>
-    GoogleAPIService.refreshAccessToken(refreshToken, proxyUrl, oauthClientKey),
+  refreshAccessToken: (accountId, refreshToken, proxyUrl, oauthClientKey, health) =>
+    CloudAccountRefreshService.refreshAccessToken({
+      accountId,
+      refreshToken,
+      proxyUrl,
+      oauthClientKey,
+      health,
+    }),
   fetchProjectId: (accessToken, proxyUrl) =>
     proxyUrl
       ? GoogleAPIService.fetchProjectId(accessToken, proxyUrl)

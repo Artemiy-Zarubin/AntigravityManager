@@ -30,6 +30,7 @@ function createPolicy() {
     markFromUpstreamError: vi.fn().mockResolvedValue(undefined),
     getRemainingRateLimitWait: vi.fn().mockReturnValue(30),
     markModelSuccess: vi.fn(),
+    markValidationRequired: vi.fn().mockResolvedValue(undefined),
   };
   const logger = {
     log: vi.fn(),
@@ -254,7 +255,7 @@ describe('ProxyRetryService', () => {
       model: 'gemini-3-flash',
     });
   });
-  it('keeps the account in rotation for a VALIDATION_REQUIRED 403', async () => {
+  it('quarantines the account for a VALIDATION_REQUIRED 403', async () => {
     const { policy, accountLeaseService } = createPolicy();
 
     await policy.applyUpstreamPenalty(
@@ -271,7 +272,9 @@ describe('ProxyRetryService', () => {
           },
           {
             type: 'type.googleapis.com/google.rpc.Help',
-            links: [{ description: 'Verify your account', url: 'https://example.com/verify' }],
+            links: [
+              { description: 'Verify your account', url: 'https://accounts.google.com/verify' },
+            ],
           },
         ],
       }),
@@ -279,6 +282,11 @@ describe('ProxyRetryService', () => {
 
     expect(accountLeaseService.markAsForbidden).not.toHaveBeenCalled();
     expect(accountLeaseService.markFromUpstreamError).not.toHaveBeenCalled();
+    expect(accountLeaseService.markValidationRequired).toHaveBeenCalledWith({
+      accountId: 'acc-validation',
+      verificationUrl: 'https://accounts.google.com/verify',
+      description: 'Verify your account',
+    });
   });
 
   it('keeps the account in rotation for a SECURITY_POLICY_VIOLATED 403', async () => {
@@ -295,6 +303,7 @@ describe('ProxyRetryService', () => {
     );
 
     expect(accountLeaseService.markAsForbidden).not.toHaveBeenCalled();
+    expect(accountLeaseService.markValidationRequired).not.toHaveBeenCalled();
     expect(accountLeaseService.markFromUpstreamError).not.toHaveBeenCalled();
   });
 

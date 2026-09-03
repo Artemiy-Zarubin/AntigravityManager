@@ -38,6 +38,18 @@ const SIGNATURES: MagicSignature[] = [
   { mimeType: 'audio/ogg', offset: 0, bytes: [0x4f, 0x67, 0x67, 0x53] },
   { mimeType: 'audio/mpeg', offset: 0, bytes: [0x49, 0x44, 0x33] },
   { mimeType: 'audio/mpeg', offset: 0, bytes: [0xff, 0xfb] },
+  {
+    mimeType: 'audio/aiff',
+    offset: 0,
+    bytes: [0x46, 0x4f, 0x52, 0x4d],
+    verify: (buffer) => buffer.subarray(8, 12).toString('latin1') === 'AIFF',
+  },
+  {
+    mimeType: 'audio/aac',
+    offset: 0,
+    bytes: [0xff],
+    verify: (buffer) => buffer.length > 1 && (buffer[1] & 0xf6) === 0xf0,
+  },
   { mimeType: 'video/mp4', offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] },
   { mimeType: 'application/gzip', offset: 0, bytes: [0x1f, 0x8b] },
   { mimeType: 'application/zip', offset: 0, bytes: [0x50, 0x4b, 0x03, 0x04] },

@@ -32,13 +32,13 @@ const QUOTA_API_ENDPOINTS = [
   'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
   'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-] as const;
+];
 
 const QUOTA_SUMMARY_ENDPOINTS = [
   'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary',
   'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
   'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
-] as const;
+];
 
 // Request timeout in milliseconds (30 seconds)
 const REQUEST_TIMEOUT_MS = 30000;
@@ -47,15 +47,29 @@ const OAUTH_CLIENT_ERROR_CODES = new Set([
   'unauthorized_client',
   'deleted_client',
 ]);
+const INVALID_GRANT_RETRY_DELAY_MS = 500;
 
-function extractOAuthErrorCode(errorText: string): string | null {
+const OAuthErrorResponseSchema = z.object({
+  error: z.string().optional(),
+  error_description: z.string().optional(),
+});
+
+function parseOAuthErrorResponse(
+  errorText: string,
+): z.infer<typeof OAuthErrorResponseSchema> | null {
   try {
-    const parsed = JSON.parse(errorText) as { error?: unknown };
-    if (typeof parsed.error === 'string') {
-      return parsed.error.trim().toLowerCase();
-    }
+    const parsed = OAuthErrorResponseSchema.safeParse(JSON.parse(errorText));
+    return parsed.success ? parsed.data : null;
   } catch {
     // Some OAuth endpoints or intermediaries can return plain-text errors.
+    return null;
+  }
+}
+
+export function extractOAuthErrorCode(errorText: string): string | null {
+  const parsed = parseOAuthErrorResponse(errorText);
+  if (parsed?.error) {
+    return parsed.error.trim().toLowerCase();
   }
 
   const text = errorText.toLowerCase();
@@ -66,6 +80,32 @@ function extractOAuthErrorCode(errorText: string): string | null {
   }
 
   return null;
+}
+
+function extractOAuthErrorDescription(errorText: string): string | undefined {
+  const parsed = parseOAuthErrorResponse(errorText);
+  if (parsed?.error_description) {
+    const normalized = Array.from(parsed.error_description, (character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f ? ' ' : character;
+    })
+      .join('')
+      .trim();
+    return normalized === '' ? undefined : normalized.slice(0, 200);
+  }
+  return undefined;
+}
+
+export class OAuthTokenRefreshError extends Error {
+  constructor(
+    readonly code: string | null,
+    readonly status: number,
+    readonly clientKey: string,
+    readonly description?: string,
+  ) {
+    super(`Token refresh failed for OAuth client [${clientKey}]: ${code ?? `HTTP ${status}`}`);
+    this.name = 'OAuthTokenRefreshError';
+  }
 }
 
 export function isClientMismatchError(errorText: string): boolean {
@@ -81,17 +121,37 @@ function createTimeoutSignal(ms: number, externalSignal?: AbortSignal): AbortSig
   return externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
 }
 
+function waitForAbortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+    const handleAbort = () => {
+      clearTimeout(timeout);
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', handleAbort, { once: true });
+  });
+}
+
 // --- Types ---
 
-export interface TokenResponse {
-  access_token: string;
-  expires_in: number;
-  token_type: string;
-  refresh_token?: string;
-  id_token?: string;
-  scope?: string;
-  oauth_client_key?: string;
-}
+const TokenResponseSchema = z.object({
+  access_token: z.string().min(1),
+  expires_in: z.number(),
+  token_type: z.string().min(1),
+  refresh_token: z.string().optional(),
+  id_token: z.string().optional(),
+  scope: z.string().optional(),
+  oauth_client_key: z.string().optional(),
+});
+
+export type TokenResponse = z.infer<typeof TokenResponseSchema>;
 
 export type { OAuthClientDescriptor };
 
@@ -159,80 +219,125 @@ export interface QuotaGroup {
   buckets: QuotaBucket[];
 }
 
-// Internal types for API parsing
-interface ModelInfoRaw {
-  quotaInfo?: {
-    remainingFraction?: number;
-    resetTime?: string;
-  };
-  displayName?: string;
-  supportsImages?: boolean;
-  supportsThinking?: boolean;
-  thinkingBudget?: number;
-  recommended?: boolean;
-  maxTokens?: number;
-  maxOutputTokens?: number;
-  supportedMimeTypes?: Record<string, boolean>;
-}
+// Internal schemas define the trust boundary for Google API responses.
+const AvailableCreditRawSchema = z.object({
+  creditType: z.string().optional(),
+  creditAmount: z.union([z.string(), z.number()]).optional(),
+  minimumCreditAmountForUsage: z.union([z.string(), z.number()]).optional(),
+});
 
-interface DeprecatedModelInfoRaw {
-  newModelId?: string;
-}
+const TierRawSchema = z.object({
+  is_default: z.boolean().optional(),
+  id: z.string().optional(),
+  quotaTier: z.string().optional(),
+  name: z.string().optional(),
+  slug: z.string().optional(),
+  availableCredits: z.array(AvailableCreditRawSchema).optional(),
+});
 
-interface IneligibleTierRaw {
-  reasonCode?: string;
-}
+const LoadProjectResponseSchema = z.object({
+  cloudaicompanionProject: z.string().optional(),
+  currentTier: TierRawSchema.optional(),
+  paidTier: TierRawSchema.optional(),
+  allowedTiers: z.array(TierRawSchema).optional(),
+  ineligibleTiers: z.array(z.object({ reasonCode: z.string().optional() })).optional(),
+});
 
-interface TierRaw {
-  is_default?: boolean;
-  id?: string;
-  quotaTier?: string;
-  name?: string;
-  slug?: string;
-  availableCredits?: AvailableCreditRaw[];
-}
+const ModelInfoRawSchema = z.object({
+  quotaInfo: z
+    .object({
+      remainingFraction: z.number().optional(),
+      resetTime: z.string().optional(),
+    })
+    .optional(),
+  displayName: z.string().optional(),
+  supportsImages: z.boolean().optional(),
+  supportsThinking: z.boolean().optional(),
+  thinkingBudget: z.number().optional(),
+  recommended: z.boolean().optional(),
+  maxTokens: z.number().optional(),
+  maxOutputTokens: z.number().optional(),
+  supportedMimeTypes: z.record(z.string(), z.boolean()).optional(),
+});
 
-interface AvailableCreditRaw {
-  creditType?: string;
-  creditAmount?: string | number;
-  minimumCreditAmountForUsage?: string | number;
-}
+const FetchModelsResponseSchema = z.object({
+  models: z.record(z.string(), ModelInfoRawSchema).optional(),
+  deprecatedModelIds: z
+    .record(z.string(), z.object({ newModelId: z.string().optional() }))
+    .optional(),
+});
 
-interface LoadProjectResponse {
-  cloudaicompanionProject?: string;
-  currentTier?: TierRaw;
-  paidTier?: TierRaw;
-  allowedTiers?: TierRaw[];
-  ineligibleTiers?: IneligibleTierRaw[];
-}
+const QuotaSummaryResponseSchema = z.object({
+  groups: z
+    .array(
+      z.object({
+        displayName: z.string().optional(),
+        description: z.string().optional(),
+        buckets: z
+          .array(
+            z.object({
+              bucketId: z.string().optional(),
+              window: z.string().optional(),
+              remainingFraction: z.number().optional(),
+              resetTime: z.string().optional(),
+              displayName: z.string().optional(),
+              description: z.string().optional(),
+            }),
+          )
+          .optional(),
+      }),
+    )
+    .optional(),
+});
 
-interface FetchModelsResponse {
-  models?: Record<string, ModelInfoRaw>;
-  deprecatedModelIds?: Record<string, DeprecatedModelInfoRaw>;
-}
-
-interface QuotaSummaryBucketRaw {
-  bucketId?: string;
-  window?: string;
-  remainingFraction?: number;
-  resetTime?: string;
-  displayName?: string;
-  description?: string;
-}
-
-interface QuotaSummaryGroupRaw {
-  displayName?: string;
-  description?: string;
-  buckets?: QuotaSummaryBucketRaw[];
-}
-
-interface QuotaSummaryResponse {
-  groups?: QuotaSummaryGroupRaw[];
-}
+type ModelInfoRaw = z.infer<typeof ModelInfoRawSchema>;
+type LoadProjectResponse = z.infer<typeof LoadProjectResponseSchema>;
+type FetchModelsResponse = z.infer<typeof FetchModelsResponseSchema>;
+type QuotaSummaryResponse = z.infer<typeof QuotaSummaryResponseSchema>;
 
 interface ProjectContext {
   projectId?: string;
   subscriptionTier?: string;
+}
+
+function parseTokenResponse(payload: unknown, oauthClientKey: string): TokenResponse {
+  const parsed = TokenResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error('Received malformed OAuth token response from Google APIs');
+  }
+
+  return {
+    ...parsed.data,
+    oauth_client_key: oauthClientKey,
+  };
+}
+
+function parseLoadProjectResponse(payload: unknown): LoadProjectResponse {
+  const parsed = LoadProjectResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error('Received malformed project context response from Google APIs');
+  }
+  return parsed.data;
+}
+
+function parseFetchModelsResponse(payload: unknown): FetchModelsResponse {
+  const parsed = FetchModelsResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error('Received malformed quota response from Google APIs');
+  }
+  return parsed.data;
+}
+
+function parseQuotaSummaryResponse(payload: unknown): QuotaSummaryResponse {
+  const parsed = QuotaSummaryResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new Error('Received malformed quota summary response from Google APIs');
+  }
+  return parsed.data;
+}
+
+function isHttp429Error(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('HTTP 429');
 }
 
 function sleep(ms: number): Promise<void> {
@@ -575,9 +680,7 @@ export class GoogleAPIService {
       );
 
       if (response.ok) {
-        const tokenResponse = (await response.json()) as TokenResponse;
-        tokenResponse.oauth_client_key = client.key;
-        return tokenResponse;
+        return parseTokenResponse(await response.json(), client.key);
       }
 
       const text = await response.text();
@@ -619,37 +722,47 @@ export class GoogleAPIService {
         grant_type: 'refresh_token',
       });
 
-      const response = await fetch(URLS.TOKEN, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params,
-        signal: createTimeoutSignal(REQUEST_TIMEOUT_MS, requestSignal),
-        ...this.getFetchOptions(proxyUrl),
-      }).catch((err: unknown) => {
-        if (err instanceof Error && err.name === 'AbortError') {
-          throw new Error(
-            'Token refresh timed out. Please check your network connection and try again.',
-          );
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await fetch(URLS.TOKEN, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params,
+          signal: createTimeoutSignal(REQUEST_TIMEOUT_MS, requestSignal),
+          ...this.getFetchOptions(proxyUrl),
+        }).catch((err: unknown) => {
+          if (err instanceof Error && err.name === 'AbortError') {
+            throw new Error(
+              'Token refresh timed out. Please check your network connection and try again.',
+            );
+          }
+          throw err;
+        });
+
+        if (response.ok) {
+          return parseTokenResponse(await response.json(), client.key);
         }
-        throw err;
-      });
 
-      if (response.ok) {
-        const tokenResponse = (await response.json()) as TokenResponse;
-        tokenResponse.oauth_client_key = client.key;
-        return tokenResponse;
-      }
+        const text = await response.text();
+        const errorCode = extractOAuthErrorCode(text);
+        attemptErrors.push(`${client.key} => ${errorCode ?? `HTTP ${response.status}`}`);
+        if (errorCode === 'invalid_grant' && attempt === 0) {
+          await waitForAbortableDelay(INVALID_GRANT_RETRY_DELAY_MS, requestSignal);
+          continue;
+        }
+        if (isClientMismatchError(text)) {
+          logger.warn(
+            `[GoogleAPIService] Token refresh failed for OAuth client '${client.key}', trying next client`,
+          );
+          break;
+        }
 
-      const text = await response.text();
-      attemptErrors.push(`${client.key} => ${text}`);
-      if (isClientMismatchError(text)) {
-        logger.warn(
-          `[GoogleAPIService] Token refresh failed for OAuth client '${client.key}', trying next client`,
+        throw new OAuthTokenRefreshError(
+          errorCode,
+          response.status,
+          client.key,
+          extractOAuthErrorDescription(text),
         );
-        continue;
       }
-
-      throw new Error(`Token refresh failed for client [${client.key}]: ${text}`);
     }
 
     throw new Error(`Token refresh failed for all OAuth clients: ${attemptErrors.join(' | ')}`);
@@ -707,8 +820,8 @@ export class GoogleAPIService {
 
     let projectId: string | undefined;
     let subscriptionTier: string | undefined;
-    let lastError: any;
-    const endpoints = [URLS.LOAD_PROJECT, URLS.SANDBOX_LOAD_PROJECT] as const;
+    let lastError: unknown;
+    const endpoints = [URLS.LOAD_PROJECT, URLS.SANDBOX_LOAD_PROJECT];
 
     for (const endpoint of endpoints) {
       try {
@@ -721,7 +834,7 @@ export class GoogleAPIService {
         });
 
         if (response.ok) {
-          const data = (await response.json()) as LoadProjectResponse;
+          const data = parseLoadProjectResponse(await response.json());
           if (isString(data.cloudaicompanionProject)) {
             projectId = data.cloudaicompanionProject;
           }
@@ -746,7 +859,7 @@ export class GoogleAPIService {
         break;
       }
 
-      if (endpoint !== URLS.LOAD_PROJECT || !String(lastError?.message).startsWith('HTTP 429')) {
+      if (endpoint !== URLS.LOAD_PROJECT || !isHttp429Error(lastError)) {
         break;
       }
     }
@@ -797,7 +910,7 @@ export class GoogleAPIService {
         return null;
       }
 
-      const fallbackData = (await fallbackResponse.json()) as LoadProjectResponse;
+      const fallbackData = parseLoadProjectResponse(await fallbackResponse.json());
       return extractAiCreditsFromProjectContext(fallbackData);
     } catch (error) {
       if (error instanceof Error && error.message === 'UNAUTHORIZED') {
@@ -910,7 +1023,7 @@ export class GoogleAPIService {
             throw new Error(errorMsg);
           }
 
-          const data = (await response.json()) as FetchModelsResponse;
+          const data = parseFetchModelsResponse(await response.json());
           const result = this.toQuotaData(data, subscriptionTier);
           const quotaGroups = await this.fetchQuotaSummary(accessToken, projectId, fetchOptions);
           if (quotaGroups) {
@@ -988,7 +1101,7 @@ export class GoogleAPIService {
             break;
           }
 
-          return toQuotaGroups((await response.json()) as QuotaSummaryResponse);
+          return toQuotaGroups(parseQuotaSummaryResponse(await response.json()));
         } catch (error) {
           logger.warn(`[GoogleAPIService] Quota summary API request failed at ${endpoint}`, error);
           break;

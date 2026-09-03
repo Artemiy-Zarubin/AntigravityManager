@@ -216,6 +216,25 @@ export async function reloadNestServerAccountLeaseCache(): Promise<boolean> {
   return true;
 }
 
+export function evictNestServerAccountLeaseAccount(accountId: string): boolean {
+  if (!app) {
+    return false;
+  }
+
+  return app.get(AccountLeaseService).evictAccount(accountId);
+}
+
+export function updateNestServerAccountLeaseOAuthHealth(
+  accountId: string,
+  oauthHealth: Parameters<AccountLeaseService['updateAccountOAuthHealth']>[1],
+): boolean {
+  if (!app) {
+    return false;
+  }
+
+  return app.get(AccountLeaseService).updateAccountOAuthHealth(accountId, oauthHealth);
+}
+
 function getConfiguredApiKey(): string | undefined {
   return getServerConfig()?.api_key;
 }

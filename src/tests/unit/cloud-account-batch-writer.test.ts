@@ -87,6 +87,20 @@ describe('upsertCloudAccountsAtomically', () => {
 
   it('writes the complete batch in one transaction without deactivating unrelated rows', async () => {
     const first = createAccount('account-a', 'a@example.com', false);
+    first.health = {
+      validation: {
+        status: 'requires_action',
+        reason: 'VALIDATION_REQUIRED',
+        detected_at_ms: 1_700_000_000_000,
+        next_probe_at_ms: 1_700_000_600_000,
+      },
+      oauth: {
+        refresh_blocked: false,
+        invalid_grant_count: 1,
+        invalid_grant_last_at_ms: 1_700_000_000_000,
+        reason: 'invalid_grant',
+      },
+    };
     const second = createAccount('account-b', 'b@example.com', true);
 
     await upsertCloudAccountsAtomically([first, second]);
@@ -102,6 +116,7 @@ describe('upsertCloudAccountsAtomically', () => {
           avatarUrl: null,
           tokenJson: `encrypted:${JSON.stringify(first.token)}`,
           quotaJson: null,
+          healthJson: `encrypted:${JSON.stringify(first.health)}`,
           deviceProfileJson: null,
           deviceHistoryJson: null,
           createdAt: 1_700_000_000,
@@ -119,6 +134,7 @@ describe('upsertCloudAccountsAtomically', () => {
           avatarUrl: null,
           tokenJson: `encrypted:${JSON.stringify(first.token)}`,
           quotaJson: null,
+          healthJson: `encrypted:${JSON.stringify(first.health)}`,
           deviceProfileJson: null,
           deviceHistoryJson: null,
           createdAt: 1_700_000_000,
@@ -138,6 +154,7 @@ describe('upsertCloudAccountsAtomically', () => {
           avatarUrl: null,
           tokenJson: `encrypted:${JSON.stringify(second.token)}`,
           quotaJson: null,
+          healthJson: null,
           deviceProfileJson: null,
           deviceHistoryJson: null,
           createdAt: 1_700_000_000,
@@ -155,6 +172,7 @@ describe('upsertCloudAccountsAtomically', () => {
           avatarUrl: null,
           tokenJson: `encrypted:${JSON.stringify(second.token)}`,
           quotaJson: null,
+          healthJson: null,
           deviceProfileJson: null,
           deviceHistoryJson: null,
           createdAt: 1_700_000_000,

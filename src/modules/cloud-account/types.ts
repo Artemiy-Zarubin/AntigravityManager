@@ -60,6 +60,24 @@ export interface CloudQuotaGroup {
   buckets: CloudQuotaBucket[];
 }
 
+export interface CloudAccountHealth {
+  validation?: {
+    status: 'requires_action';
+    reason: 'VALIDATION_REQUIRED';
+    detected_at_ms: number;
+    next_probe_at_ms: number;
+    verification_url?: string;
+    description?: string;
+  };
+  oauth?: {
+    refresh_blocked: boolean;
+    invalid_grant_count?: number;
+    invalid_grant_last_at_ms?: number;
+    blocked_at_ms?: number;
+    reason?: 'invalid_grant';
+  };
+}
+
 export interface CloudAccount {
   id: string; // UUID
   provider: 'google' | 'anthropic';
@@ -68,6 +86,7 @@ export interface CloudAccount {
   avatar_url?: string | null;
   token: CloudTokenData;
   quota?: CloudQuotaData;
+  health?: CloudAccountHealth;
   device_profile?: DeviceProfile;
   device_history?: DeviceProfileVersion[];
   created_at: number;
@@ -135,6 +154,34 @@ export const CloudQuotaDataSchema = z.object({
   quota_groups: z.array(CloudQuotaGroupSchema).optional(),
 });
 
+const HttpsUrlSchema = z.url().refine((value) => new URL(value).protocol === 'https:', {
+  message: 'Expected an HTTPS URL',
+});
+
+export const CloudAccountHealthSchema = z
+  .object({
+    validation: z
+      .object({
+        status: z.literal('requires_action'),
+        reason: z.literal('VALIDATION_REQUIRED'),
+        detected_at_ms: z.number().int().nonnegative(),
+        next_probe_at_ms: z.number().int().nonnegative(),
+        verification_url: HttpsUrlSchema.optional(),
+        description: z.string().max(500).optional(),
+      })
+      .optional(),
+    oauth: z
+      .object({
+        refresh_blocked: z.boolean(),
+        invalid_grant_count: z.number().int().nonnegative().optional(),
+        invalid_grant_last_at_ms: z.number().int().nonnegative().optional(),
+        blocked_at_ms: z.number().int().nonnegative().optional(),
+        reason: z.literal('invalid_grant').optional(),
+      })
+      .optional(),
+  })
+  .strict();
+
 export const CloudAccountSchema = z.object({
   id: z.string(),
   provider: z.enum(['google', 'anthropic']),
@@ -143,6 +190,7 @@ export const CloudAccountSchema = z.object({
   avatar_url: z.string().optional().nullable(),
   token: CloudTokenDataSchema,
   quota: CloudQuotaDataSchema.optional(),
+  health: CloudAccountHealthSchema.optional(),
   device_profile: DeviceProfileSchema.optional(),
   device_history: z.array(DeviceProfileVersionSchema).optional(),
   created_at: z.number(),

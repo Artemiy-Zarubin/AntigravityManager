@@ -114,6 +114,11 @@ export function createUpstream(options: {
 /** The account lease, reduced to the two interfaces the shared services actually ask for. */
 export function createLease(accounts: CloudAccount[]) {
   const penalties: Array<{ accountId: string; kind: string }> = [];
+  const validationQuarantines: Array<{
+    accountId: string;
+    verificationUrl?: string;
+    description?: string;
+  }> = [];
 
   return {
     getModelOutputLimitForAccount: vi.fn(() => undefined),
@@ -132,9 +137,19 @@ export function createLease(accounts: CloudAccount[]) {
     markFromUpstreamError: vi.fn(async (params: { accountIdOrEmail: string }) => {
       penalties.push({ accountId: params.accountIdOrEmail, kind: 'upstream_error' });
     }),
+    markValidationRequired: vi.fn(
+      async (params: {
+        accountId: string;
+        verificationUrl?: string;
+        description?: string;
+      }) => {
+        validationQuarantines.push(params);
+      },
+    ),
     markModelSuccess: vi.fn(),
     markModelUnrequestable: vi.fn(),
     penalties,
+    validationQuarantines,
     recordParityError: vi.fn(),
     resolveDynamicModelForAccount: vi.fn((_accountId: string, model: string) => model),
   };

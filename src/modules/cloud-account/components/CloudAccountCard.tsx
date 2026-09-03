@@ -33,6 +33,7 @@ import {
   Repeat2,
   Terminal,
   TriangleAlert,
+  ExternalLink,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
@@ -52,7 +53,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ipc } from '@/ipc/manager';
 import { useSetAccountProxy } from '@/modules/cloud-account/hooks/useCloudAccounts';
 import { isValidProxyUrl } from '@/shared/utils/url';
-import { getValidationBlockedStatusLabel } from '@/modules/cloud-account/utils/accountValidationStatus';
+import { getCloudAccountBlockedStatusLabel } from '@/modules/cloud-account/utils/accountValidationStatus';
 import type { AntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
 import { AccountTierBadge } from '@/modules/cloud-account/components/AccountTierBadge';
 import { aggregateVisibleQuotaModelFamilies } from '@/modules/cloud-account/utils/quota-model-families';
@@ -64,6 +65,7 @@ import { WeeklyQuotaDisplay } from '@/modules/cloud-account/components/WeeklyQuo
 import { DetailedQuotaDisplay } from '@/modules/cloud-account/components/DetailedQuotaDisplay';
 import { QUOTA_TEXT_COLOR_CLASS_BY_STATUS, QUOTA_BAR_COLOR_CLASS_BY_STATUS } from './quota-colors';
 import { isWeeklyQuotaBucket } from '@/modules/cloud-account/utils/quota-groups';
+import { openAccountValidationLink } from '@/modules/cloud-account/actions/cloud';
 
 type ModelQuotaEntry = [string, CloudQuotaModelInfo];
 type LiveModelAvailability = Awaited<
@@ -481,11 +483,7 @@ export function CloudAccountCard({
   const shouldShowAiCredits =
     !!aiCredits && Number.isFinite(aiCredits.credits) && aiCredits.credits >= 0;
 
-  const validationBlockedStatusLabel = getValidationBlockedStatusLabel(
-    account.status,
-    account.status_reason,
-    t,
-  );
+  const validationBlockedStatusLabel = getCloudAccountBlockedStatusLabel(account, t);
 
   return (
     <Card
@@ -647,6 +645,17 @@ export function CloudAccountCard({
               <span className="text-destructive bg-destructive/10 border-destructive/20 rounded border px-1.5 py-0.5 text-[11px] font-semibold">
                 {validationBlockedStatusLabel}
               </span>
+            )}
+            {account.health?.validation?.verification_url && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-6 gap-1 px-2 text-[10px]"
+                onClick={() => openAccountValidationLink({ accountId: account.id })}
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t('cloud.card.completeValidation')}
+              </Button>
             )}
           </div>
 
@@ -927,11 +936,7 @@ export function CompactCloudAccountCard({
   const shouldShowAiCredits =
     !!aiCredits && Number.isFinite(aiCredits.credits) && aiCredits.credits >= 0;
 
-  const validationBlockedStatusLabel = getValidationBlockedStatusLabel(
-    account.status,
-    account.status_reason,
-    t,
-  );
+  const validationBlockedStatusLabel = getCloudAccountBlockedStatusLabel(account, t);
 
   return (
     <div className="group bg-card hover:border-primary/40 flex items-center gap-3 rounded-lg border px-3 py-2 transition-all duration-200">
@@ -990,6 +995,16 @@ export function CompactCloudAccountCard({
             <span className="text-destructive shrink-0 font-medium">
               {validationBlockedStatusLabel}
             </span>
+          )}
+          {account.health?.validation?.verification_url && (
+            <button
+              type="button"
+              className="text-destructive inline-flex shrink-0 items-center gap-1 text-xs font-semibold"
+              onClick={() => openAccountValidationLink({ accountId: account.id })}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {t('cloud.card.completeValidation')}
+            </button>
           )}
 
           {shouldShowAiCredits && aiCredits && (

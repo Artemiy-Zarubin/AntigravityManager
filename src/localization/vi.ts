@@ -459,6 +459,7 @@ const vi = {
       validationRiskControlled: 'Rủi ro / Bị giới hạn',
       validationOAuthReauthRequired: 'Cần xác thực lại OAuth',
       validationRequired: 'Cần xác minh',
+      completeValidation: 'Hoàn tất xác minh',
       left: 'còn lại',
       used: 'Đã dùng',
       unknown: 'Người dùng không rõ',

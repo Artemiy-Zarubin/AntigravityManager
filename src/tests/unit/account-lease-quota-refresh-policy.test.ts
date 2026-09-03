@@ -30,6 +30,7 @@ function createPolicy(tokenCache: Map<string, AccountLeaseTokenData>) {
     getAccount: vi.fn(),
     updateToken: vi.fn(),
     updateQuota: vi.fn(),
+    mutateHealth: vi.fn(),
   };
   const upstream: AccountLeaseUpstream = {
     fetchQuota: vi.fn(),

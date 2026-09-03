@@ -5,6 +5,7 @@ import type {
   AccountLeaseUpstream,
 } from '@/modules/proxy-gateway/server/modules/account-lease/interfaces/account-lease-adapters';
 import type { AccountLeaseTokenData } from '@/modules/proxy-gateway/server/modules/account-lease/interfaces/account-lease-token-types';
+import { OAuthTokenRefreshError } from '@/modules/cloud-account/services/GoogleAPIService';
 
 function createToken(overrides: Partial<AccountLeaseTokenData> = {}): AccountLeaseTokenData {
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -31,6 +32,7 @@ function createPolicyContext(tokenCache: Map<string, AccountLeaseTokenData>) {
     getAccount: vi.fn(),
     updateToken: vi.fn(),
     updateQuota: vi.fn(),
+    mutateHealth: vi.fn(),
   };
   const upstream: AccountLeaseUpstream = {
     fetchQuota: vi.fn(),
@@ -128,5 +130,35 @@ describe('AccountLeaseHydrationPolicy', () => {
 
     expect(token.access_token).toBe('access-token-new');
     expect(persistTokenState).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects invalid_grant refresh failures without persisting policy-owned health', async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const token = createToken({ expiry_timestamp: nowSeconds - 1 });
+    const tokenCache = new Map([['acc-1', token]]);
+    const { accountStore, policy, upstream } = createPolicyContext(tokenCache);
+    vi.mocked(accountStore.getAccount).mockResolvedValue({
+      id: 'acc-1',
+      provider: 'google',
+      email: token.email,
+      token: {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        expires_in: token.expires_in,
+        expiry_timestamp: token.expiry_timestamp,
+        token_type: token.token_type,
+      },
+      created_at: nowSeconds,
+      last_used: nowSeconds,
+    });
+    vi.mocked(upstream.refreshAccessToken).mockRejectedValue(
+      new OAuthTokenRefreshError('invalid_grant', 400, 'default'),
+    );
+
+    await expect(policy.refreshSelectedTokenIfNeeded('acc-1', token, nowSeconds)).rejects.toThrow(
+      'refresh rejected',
+    );
+    expect(accountStore.mutateHealth).not.toHaveBeenCalled();
+    expect(tokenCache.has('acc-1')).toBe(true);
   });
 });

@@ -1,11 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudMonitorService } from '@/modules/cloud-account/services/CloudMonitorService';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
-import { GoogleAPIService } from '@/modules/cloud-account/services/GoogleAPIService';
+import {
+  GoogleAPIService,
+  OAuthTokenRefreshError,
+} from '@/modules/cloud-account/services/GoogleAPIService';
+import {
+  CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+  CloudAccountRefreshBlockedError,
+  CloudAccountRefreshService,
+} from '@/modules/cloud-account/services/CloudAccountRefreshService';
 
 vi.mock('@/modules/cloud-account/persistence/cloudHandler');
 vi.mock('@/modules/cloud-account/persistence/cloud-account-settings-store');
-vi.mock('@/modules/cloud-account/services/GoogleAPIService');
+vi.mock('@/modules/cloud-account/services/GoogleAPIService', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@/modules/cloud-account/services/GoogleAPIService')>();
+  return {
+    ...original,
+    GoogleAPIService: {
+      ...original.GoogleAPIService,
+      fetchQuota: vi.fn(),
+      refreshAccessToken: vi.fn(),
+    },
+  };
+});
 vi.mock('@/modules/cloud-account/services/AutoSwitchService');
 vi.mock('@/shared/logging/logger');
 
@@ -19,6 +38,7 @@ describe('CloudMonitorService unrefreshable tokens', () => {
 
   afterEach(() => {
     CloudMonitorService.stop();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -66,5 +86,57 @@ describe('CloudMonitorService unrefreshable tokens', () => {
 
     expect(GoogleAPIService.refreshAccessToken).not.toHaveBeenCalled();
     expect(GoogleAPIService.fetchQuota).toHaveBeenCalledWith('still-valid-access-token', undefined);
+  });
+
+  it('does not mark the account expired after the first confirmed invalid_grant', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.mocked(CloudAccountRepo.getAccounts).mockResolvedValue([
+      {
+        id: 'first-strike-account',
+        email: 'first-strike@example.com',
+        token: {
+          access_token: 'expired-access-token',
+          refresh_token: 'refresh-token',
+          expiry_timestamp: now - 1,
+        },
+      },
+    ] as never);
+    vi.spyOn(CloudAccountRefreshService, 'refreshAccessToken').mockRejectedValue(
+      new OAuthTokenRefreshError('invalid_grant', 400, 'default', 'expired or revoked'),
+    );
+
+    await CloudMonitorService.poll();
+
+    expect(CloudAccountRepo.setAccountStatus).not.toHaveBeenCalledWith(
+      'first-strike-account',
+      'expired',
+      expect.anything(),
+    );
+  });
+
+  it('marks the account expired only after the refresh coordinator blocks it', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.mocked(CloudAccountRepo.getAccounts).mockResolvedValue([
+      {
+        id: 'blocked-account',
+        email: 'blocked@example.com',
+        token: {
+          access_token: 'expired-access-token',
+          refresh_token: 'refresh-token',
+          expiry_timestamp: now - 1,
+        },
+      },
+    ] as never);
+    vi.spyOn(CloudAccountRefreshService, 'refreshAccessToken').mockRejectedValue(
+      new CloudAccountRefreshBlockedError('blocked-account'),
+    );
+
+    await CloudMonitorService.poll();
+
+    expect(CloudAccountRepo.setAccountStatus).toHaveBeenCalledWith(
+      'blocked-account',
+      'expired',
+      CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
+    );
   });
 });

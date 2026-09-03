@@ -8,6 +8,7 @@ export const accounts = sqliteTable('accounts', {
   avatarUrl: text('avatar_url'),
   tokenJson: text('token_json').notNull(),
   quotaJson: text('quota_json'),
+  healthJson: text('health_json'),
   deviceProfileJson: text('device_profile_json'),
   deviceHistoryJson: text('device_history_json'),
   createdAt: integer('created_at').notNull(),

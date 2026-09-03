@@ -8,6 +8,8 @@ import {
   normalizeClientKey,
   normalizeProjectId,
 } from '../interfaces/account-lease-token-types';
+import { CloudAccountRefreshBlockedError } from '@/modules/cloud-account/services/CloudAccountRefreshService';
+import { OAuthTokenRefreshError } from '@/modules/cloud-account/services/GoogleAPIService';
 
 type AccountLeaseHydrationLogger = Pick<Logger, 'debug' | 'error' | 'log' | 'warn'>;
 
@@ -90,9 +92,11 @@ export class AccountLeaseHydrationPolicy {
     this.options.logger.log(`Access token near expiry for ${tokenToRefresh.email}; refreshing`);
     try {
       const refreshedToken = await this.options.upstream.refreshAccessToken(
+        accountId,
         tokenToRefresh.refresh_token,
         tokenToRefresh.upstream_proxy_url,
         tokenToRefresh.oauth_client_key,
+        tokenToRefresh.oauth_health ? { oauth: tokenToRefresh.oauth_health } : undefined,
       );
       tokenToRefresh.access_token = refreshedToken.access_token;
       tokenToRefresh.refresh_token = refreshedToken.refresh_token ?? tokenToRefresh.refresh_token;
@@ -112,6 +116,16 @@ export class AccountLeaseHydrationPolicy {
         `Failed to refresh access token for ${tokenToRefresh.email}`,
         error,
       );
+      if (
+        error instanceof CloudAccountRefreshBlockedError ||
+        (error instanceof OAuthTokenRefreshError && error.code === 'invalid_grant')
+      ) {
+        if (error instanceof CloudAccountRefreshBlockedError) {
+          tokenCache.delete(accountId);
+        }
+        throw new AccountLeaseRefreshRejectedError(accountId, 'invalid_grant', error);
+      }
+      throw error;
     }
   }
 
@@ -205,29 +219,25 @@ export class AccountLeaseHydrationPolicy {
   }
 
   async persistTokenState(accountId: string, tokenData: AccountLeaseTokenData): Promise<void> {
-    try {
-      const persistedAccount = await this.options.accountStore.getAccount(accountId);
-      if (persistedAccount?.token) {
-        const updatedToken = {
-          ...persistedAccount.token,
-          access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
-          id_token: tokenData.id_token ?? persistedAccount.token.id_token,
-          expires_in: tokenData.expires_in,
-          expiry_timestamp: tokenData.expiry_timestamp,
-          project_id: tokenData.project_id ?? persistedAccount.token.project_id,
-          oauth_client_key:
-            tokenData.oauth_client_key ??
-            normalizeClientKey(persistedAccount.token.oauth_client_key) ??
-            persistedAccount.token.oauth_client_key,
-          session_id: tokenData.session_id ?? persistedAccount.token.session_id,
-          upstream_proxy_url:
-            tokenData.upstream_proxy_url ?? persistedAccount.token.upstream_proxy_url,
-        };
-        await this.options.accountStore.updateToken(accountId, updatedToken);
-      }
-    } catch (error) {
-      this.options.logger.error('Failed to persist token state to database', error);
+    const persistedAccount = await this.options.accountStore.getAccount(accountId);
+    if (persistedAccount?.token) {
+      const updatedToken = {
+        ...persistedAccount.token,
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        id_token: tokenData.id_token ?? persistedAccount.token.id_token,
+        expires_in: tokenData.expires_in,
+        expiry_timestamp: tokenData.expiry_timestamp,
+        project_id: tokenData.project_id ?? persistedAccount.token.project_id,
+        oauth_client_key:
+          tokenData.oauth_client_key ??
+          normalizeClientKey(persistedAccount.token.oauth_client_key) ??
+          persistedAccount.token.oauth_client_key,
+        session_id: tokenData.session_id ?? persistedAccount.token.session_id,
+        upstream_proxy_url:
+          tokenData.upstream_proxy_url ?? persistedAccount.token.upstream_proxy_url,
+      };
+      await this.options.accountStore.updateToken(accountId, updatedToken);
     }
   }
 
@@ -245,5 +255,16 @@ export class AccountLeaseHydrationPolicy {
     }
 
     await this.persistTokenState(accountId, tokenData);
+  }
+}
+
+export class AccountLeaseRefreshRejectedError extends Error {
+  constructor(
+    readonly accountId: string,
+    readonly reason: 'invalid_grant',
+    options?: ErrorOptions,
+  ) {
+    super(`Account ${accountId} refresh rejected: ${reason}`, options);
+    this.name = 'AccountLeaseRefreshRejectedError';
   }
 }

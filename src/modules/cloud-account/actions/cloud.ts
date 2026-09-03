@@ -20,6 +20,10 @@ export function deleteCloudAccount(input: { accountId: string }) {
   return ipc.client.cloud.deleteCloudAccount(input);
 }
 
+export function openAccountValidationLink(input: { accountId: string }) {
+  return ipc.client.cloud.openAccountValidationLink(input);
+}
+
 export function refreshAccountQuota(input: { accountId: string }) {
   console.log(`[Action] Calling refreshAccountQuota for: ${input.accountId}`);
   return ipc.client.cloud.refreshAccountQuota(input);

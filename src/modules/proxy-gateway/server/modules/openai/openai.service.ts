@@ -55,6 +55,8 @@ import { GenerationConstraintsService } from '@/modules/proxy-gateway/server/sha
 import { ModelRoutingService } from '@/modules/proxy-gateway/server/shared/services/model-routing.service';
 import { ProxyRetryService } from '@/modules/proxy-gateway/server/shared/services/proxy-retry.service';
 import { GeminiService } from '@/modules/proxy-gateway/server/modules/gemini/gemini.service';
+import { validateOpenAIInputAudio } from './chat/openai-input-audio';
+import { validateOpenAIResponseFormat } from './chat/openai-response-format';
 
 export type OpenAIOutputProtocol = 'chat-completions' | 'responses';
 
@@ -81,6 +83,8 @@ export class OpenAIService extends BaseProxyService {
     request: OpenAIChatRequest,
     outputProtocol: OpenAIOutputProtocol = 'chat-completions',
   ): Promise<OpenAIChatResponse | Observable<string>> {
+    validateOpenAIInputAudio(request);
+    validateOpenAIResponseFormat(request);
     const appliedVariantRequest = applyOpenAIModelVariant(request);
     const routedRequest = appliedVariantRequest.request;
     const sessionKey = this.extractOpenAISessionKey(request);
@@ -111,6 +115,9 @@ export class OpenAIService extends BaseProxyService {
       // 1. Get Token
       const token = await this.selectRetryToken(retryState, targetModel, sessionKey);
       if (!token) {
+        if (lastError !== null) {
+          throw lastError;
+        }
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       const effectiveTargetModel = this.accountLeaseService.resolveDynamicModelForAccount(

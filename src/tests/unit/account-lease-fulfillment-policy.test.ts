@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AccountLeaseFulfillmentPolicy } from '@/modules/proxy-gateway/server/modules/account-lease/policies/account-lease-fulfillment.policy';
 import type { AccountLeaseHydrationPolicy } from '@/modules/proxy-gateway/server/modules/account-lease/policies/account-lease-hydration.policy';
+import { AccountLeaseRefreshRejectedError } from '@/modules/proxy-gateway/server/modules/account-lease/policies/account-lease-hydration.policy';
 import type { AccountLeaseTokenData } from '@/modules/proxy-gateway/server/modules/account-lease/interfaces/account-lease-token-types';
 
 function createToken(overrides: Partial<AccountLeaseTokenData> = {}): AccountLeaseTokenData {
@@ -102,5 +103,28 @@ describe('AccountLeaseFulfillmentPolicy', () => {
       'Failed to finalize selected account token',
       expect.any(Error),
     );
+  });
+
+  it('rethrows the typed refresh rejection for account rotation', async () => {
+    const rejection = new AccountLeaseRefreshRejectedError('acc-1', 'invalid_grant');
+    const hydrationPolicy = {
+      hydrateSelectedToken: vi.fn().mockRejectedValue(rejection),
+    } as unknown as AccountLeaseHydrationPolicy;
+    const policy = new AccountLeaseFulfillmentPolicy({
+      hydrationPolicy,
+      markRateLimitSuccess: vi.fn(),
+      bindSession: vi.fn(),
+      stickySessionTtlMs: 600_000,
+      resolveFallbackProjectId: () => 'fallback-project',
+      logger: { error: vi.fn() },
+    });
+
+    await expect(
+      policy.finalizeSelectedToken({
+        accountId: 'acc-1',
+        tokenData: createToken(),
+        nowSeconds: 100,
+      }),
+    ).rejects.toBe(rejection);
   });
 });

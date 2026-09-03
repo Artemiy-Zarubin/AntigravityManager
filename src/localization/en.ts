@@ -524,6 +524,7 @@ const en = {
       validationRiskControlled: 'Risk / Rate Limited',
       validationOAuthReauthRequired: 'OAuth Re-auth Required',
       validationRequired: 'Verification Required',
+      completeValidation: 'Verify',
       left: 'left',
       used: 'Used',
       unknown: 'Unknown User',

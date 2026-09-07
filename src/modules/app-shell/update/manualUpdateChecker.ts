@@ -4,14 +4,20 @@ import {
   buildGitHubReleaseFromUpdaterJson,
   buildManualUpdateInfo,
 } from './manualUpdatePolicy';
+import axios from 'axios';
 import type {
   GitHubRelease,
   ManualUpdateCheckResult,
   ManualUpdatePlatform,
   ManualUpdateSnooze,
-  PackageJsonVersion,
-  UpdaterJson,
 } from './types';
+import {
+  GitHubReleaseSchema,
+  ManualUpdateSnoozeSchema,
+  PackageJsonVersionSchema,
+  UpdaterJsonSchema,
+} from './types';
+import { createAxiosHttpClient } from '@/shared/http/axios-json-client';
 import { getAppSetting, setAppSetting } from '@/shared/persistence/appSettingsStore';
 import { logger } from '@/shared/logging/logger';
 
@@ -27,13 +33,23 @@ const JSDELIVR_PACKAGE_JSON_URL =
   'https://cdn.jsdelivr.net/gh/Draculabo/AntigravityManager@main/package.json';
 const MANUAL_UPDATE_SNOOZE_KEY = 'manual_update_snooze';
 const MANUAL_UPDATE_MOCK_VERSION = '9.9.9';
+const MANUAL_UPDATE_TIMEOUT_MS = 15_000;
+
+const manualUpdateHttpClient = createAxiosHttpClient(
+  axios.create({
+    headers: {
+      'User-Agent': 'AntigravityManager',
+    },
+    timeout: MANUAL_UPDATE_TIMEOUT_MS,
+  }),
+);
 
 function isManualUpdatePlatform(platform: NodeJS.Platform): platform is ManualUpdatePlatform {
   return platform === 'darwin' || platform === 'linux' || platform === 'win32';
 }
 
 export function getManualUpdateSnooze(): ManualUpdateSnooze | null {
-  return getAppSetting<ManualUpdateSnooze | null>(MANUAL_UPDATE_SNOOZE_KEY, null);
+  return getAppSetting(MANUAL_UPDATE_SNOOZE_KEY, ManualUpdateSnoozeSchema.nullable(), null);
 }
 
 export function snoozeManualUpdate(version: string): void {
@@ -51,56 +67,50 @@ export function isManualUpdateForceEnabled(): boolean {
   return process.env.MANUAL_UPDATE_FORCE === '1';
 }
 
-async function fetchJson<T>(url: string, headers: Record<string, string> = {}): Promise<T | null> {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'AntigravityManager',
-      ...headers,
-    },
-  });
-
-  if (!response.ok) {
-    logger.warn(`ManualUpdate: ${url} returned status ${response.status}`);
-    return null;
-  }
-
-  return (await response.json()) as T;
-}
-
 async function fetchLatestReleaseFromUpdaterJson(): Promise<GitHubRelease | null> {
-  const updaterJson = await fetchJson<UpdaterJson>(LATEST_RELEASE_UPDATER_JSON_URL);
-  if (!updaterJson) {
-    return null;
-  }
+  const updaterJson = await manualUpdateHttpClient.requestJson(LATEST_RELEASE_UPDATER_JSON_URL, {
+    operation: 'manual-update-updater-json',
+    responseSchema: UpdaterJsonSchema,
+  });
 
   return buildGitHubReleaseFromUpdaterJson(updaterJson);
 }
 
 async function fetchLatestReleaseFromGitHubApi(): Promise<GitHubRelease | null> {
-  return fetchJson<GitHubRelease>(LATEST_RELEASE_API_URL, {
-    Accept: 'application/vnd.github+json',
+  return await manualUpdateHttpClient.requestJson(LATEST_RELEASE_API_URL, {
+    operation: 'manual-update-github-api',
+    request: {
+      headers: {
+        Accept: 'application/vnd.github+json',
+      },
+    },
+    responseSchema: GitHubReleaseSchema,
   });
 }
 
 async function fetchLatestReleaseFromRedirect(): Promise<GitHubRelease | null> {
-  const response = await fetch(LATEST_RELEASE_REDIRECT_URL, {
-    headers: {
-      'User-Agent': 'AntigravityManager',
+  const response = await manualUpdateHttpClient.requestRaw(LATEST_RELEASE_REDIRECT_URL, {
+    expectedStatus: (status) => status >= 300 && status < 400,
+    operation: 'manual-update-github-redirect',
+    request: {
+      maxRedirects: 0,
     },
   });
-
-  if (!response.ok) {
+  const location = response.headers.location;
+  if (typeof location !== 'string') {
     return null;
   }
 
-  return buildGitHubReleaseFromLatestRedirect(response.url);
+  return buildGitHubReleaseFromLatestRedirect(
+    new URL(location, LATEST_RELEASE_REDIRECT_URL).toString(),
+  );
 }
 
 async function fetchLatestReleaseFromPackageJson(url: string): Promise<GitHubRelease | null> {
-  const packageJson = await fetchJson<PackageJsonVersion>(url);
-  if (!packageJson) {
-    return null;
-  }
+  const packageJson = await manualUpdateHttpClient.requestJson(url, {
+    operation: 'manual-update-package-json',
+    responseSchema: PackageJsonVersionSchema,
+  });
 
   return buildGitHubReleaseFromPackageJson(packageJson);
 }
@@ -164,8 +174,6 @@ export async function checkManualUpdate(currentVersion: string): Promise<ManualU
         message: 'GitHub release check failed',
       };
     }
-    console.dir('github release' + JSON.stringify(release));
-
     const update = buildManualUpdateInfo({
       currentVersion,
       platform,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { isString } from 'lodash-es';
+import { mockAxiosRequests } from '../helpers/mock-axios-request';
 
 // Mock module to test timeout behavior
 describe('GoogleAPIService Timeout', () => {
@@ -155,7 +156,7 @@ describe('GoogleAPIService user info parsing', () => {
       }),
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -178,8 +179,7 @@ describe('GoogleAPIService user info parsing', () => {
   });
 
   it('preserves the HTTP status for user-info authentication failures', async () => {
-    vi.stubGlobal(
-      'fetch',
+    mockAxiosRequests(
       vi.fn().mockResolvedValueOnce({
         ok: false,
         status: 401,
@@ -208,14 +208,14 @@ describe('GoogleAPIService user info parsing', () => {
     expect(GoogleUserInfoHttpError).toBeDefined();
   });
 
-  it('propagates an external abort signal into the user-info request', async () => {
-    const fetchMock = vi.fn((_url: string, options: { signal: AbortSignal }) => {
-      expect(options.signal.aborted).toBe(true);
+  it('preserves an external cancellation instead of reporting it as a timeout', async () => {
+    const fetchMock = vi.fn((_url: string, options: { signal?: { aborted: boolean } }) => {
+      expect(options.signal?.aborted).toBe(true);
       const error = new Error('aborted');
       error.name = 'AbortError';
       return Promise.reject(error);
     });
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -232,7 +232,7 @@ describe('GoogleAPIService user info parsing', () => {
 
     await expect(
       GoogleAPIService.getUserInfo('access-token', undefined, controller.signal),
-    ).rejects.toThrow('User info request timed out');
+    ).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -290,7 +290,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
       }),
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -328,8 +328,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
   });
 
   it('reports AI credits authentication failures as unauthorized', async () => {
-    vi.stubGlobal(
-      'fetch',
+    mockAxiosRequests(
       vi.fn().mockResolvedValueOnce({
         ok: false,
         status: 401,
@@ -359,7 +358,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
       text: vi.fn().mockResolvedValue('INVALID_ARGUMENT'),
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -409,7 +408,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         text: vi.fn().mockResolvedValue('INVALID_ARGUMENT'),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -481,7 +480,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         }),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -557,7 +556,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         }),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -607,7 +606,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         text: vi.fn().mockResolvedValue('INVALID_ARGUMENT'),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -646,7 +645,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         status: 403,
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -667,7 +666,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('uses an explicit dispatcher from env proxy settings when no account proxy is provided', async () => {
+  it('defers HTTP(S) environment proxy selection to Axios when no account proxy is provided', async () => {
     process.env.HTTP_PROXY = 'http://127.0.0.1:9090';
     process.env.HTTPS_PROXY = 'http://127.0.0.1:9090';
     process.env.NO_PROXY = 'localhost,127.0.0.1,::1';
@@ -678,7 +677,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
       text: vi.fn().mockResolvedValue('BAD_GATEWAY'),
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -694,14 +693,14 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
     await expect(GoogleAPIService.fetchAICredits('access-token')).resolves.toBeNull();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[1]?.dispatcher).toBeDefined();
+    expect(fetchMock.mock.calls[0]?.[1]?.proxy).toBeUndefined();
 
     delete process.env.HTTP_PROXY;
     delete process.env.HTTPS_PROXY;
     delete process.env.NO_PROXY;
   });
 
-  it('uses electron proxy env as an explicit dispatcher fallback', async () => {
+  it('maps the Electron proxy environment fallback to Axios proxy options', async () => {
     process.env.ELECTRON_PROXY_SERVER = 'http://127.0.0.1:9090';
 
     const fetchMock = vi.fn().mockResolvedValueOnce({
@@ -710,7 +709,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
       text: vi.fn().mockResolvedValue('BAD_GATEWAY'),
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -726,9 +725,53 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
     await expect(GoogleAPIService.fetchAICredits('access-token')).resolves.toBeNull();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[1]?.dispatcher).toBeDefined();
+    expect(fetchMock.mock.calls[0]?.[1]?.proxy).toMatchObject({
+      host: '127.0.0.1',
+      port: 9090,
+      protocol: 'http',
+    });
 
     delete process.env.ELECTRON_PROXY_SERVER;
+  });
+
+  it('gives an account proxy precedence over HTTP(S) environment proxy settings', async () => {
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9090';
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      text: vi.fn().mockResolvedValue('BAD_GATEWAY'),
+    });
+    mockAxiosRequests(fetchMock);
+
+    const { ConfigManager } = await import('@/modules/config/ipc/manager');
+    vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
+      proxy: {
+        upstream_proxy: {
+          enabled: false,
+        },
+      },
+    } as any);
+
+    const { GoogleAPIService } = await import('@/modules/cloud-account/services/GoogleAPIService');
+
+    await expect(
+      GoogleAPIService.fetchAICredits(
+        'access-token',
+        'http://account%40user:password%20value@127.0.0.1:9180',
+      ),
+    ).resolves.toBeNull();
+
+    expect(fetchMock.mock.calls[0]?.[1]?.proxy).toMatchObject({
+      auth: {
+        password: 'password value',
+        username: 'account@user',
+      },
+      host: '127.0.0.1',
+      port: 9180,
+      protocol: 'http',
+    });
+
+    delete process.env.HTTPS_PROXY;
   });
 
   it('continues quota lookup without project when loadCodeAssist transport fails', async () => {
@@ -756,7 +799,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         text: vi.fn().mockResolvedValue('INVALID_ARGUMENT'),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -798,7 +841,7 @@ describe('GoogleAPIService fetchQuota fallback policy', () => {
         }),
       });
 
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const { ConfigManager } = await import('@/modules/config/ipc/manager');
     vi.spyOn(ConfigManager, 'loadConfig').mockReturnValue({
@@ -928,5 +971,53 @@ describe('QuotaService fallback policy', () => {
     expect(postMock).toHaveBeenCalledTimes(3);
     expect(postMock.mock.calls[1]?.[1]).toEqual({ project: 'project-1' });
     expect(postMock.mock.calls[2]?.[1]).toEqual({});
+  });
+
+  it('continues the quota request when loadCodeAssist rejects with a non-Error value', async () => {
+    const postMock = vi
+      .fn()
+      .mockRejectedValueOnce(null)
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          models: {
+            'gemini-3-flash': {
+              quotaInfo: {
+                remainingFraction: 0.7,
+                resetTime: '2026-05-05T00:00:00Z',
+              },
+            },
+          },
+        },
+      });
+
+    vi.doMock('axios', () => ({
+      default: {
+        create: vi.fn(() => ({
+          post: postMock,
+        })),
+        isAxiosError: (error: unknown) =>
+          Boolean((error as { isAxiosError?: boolean })?.isAxiosError),
+      },
+      isAxiosError: (error: unknown) =>
+        Boolean((error as { isAxiosError?: boolean })?.isAxiosError),
+    }));
+
+    const { QuotaService } = await import('../../modules/proxy-gateway/antigravity/QuotaService');
+
+    await expect(QuotaService.fetchQuota('access-token', 'user@example.com')).resolves.toEqual({
+      quotaData: {
+        models: {
+          'gemini-3-flash': {
+            percentage: 70,
+            resetTime: '2026-05-05T00:00:00Z',
+          },
+        },
+        isForbidden: false,
+        subscriptionTier: undefined,
+      },
+      projectId: undefined,
+    });
+    expect(postMock).toHaveBeenCalledTimes(2);
   });
 });

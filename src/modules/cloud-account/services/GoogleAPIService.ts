@@ -1,13 +1,13 @@
 import { z } from 'zod';
+import axios, { type AxiosProxyConfig, type AxiosRequestConfig } from 'axios';
 import { ConfigManager } from '@/modules/config/ipc/manager';
 import { AuthServer } from '@/modules/cloud-account/ipc/authServer';
-import { EnvHttpProxyAgent, ProxyAgent } from 'undici';
 import {
   buildUserAgent,
   FALLBACK_VERSION,
   resolveLocalInstalledVersion,
 } from '@/modules/proxy-gateway/server/common/utils/request-user-agent';
-import { isEmpty, isNumber, isString, isUndefined } from 'lodash-es';
+import { isEmpty, isNumber, isString } from 'lodash-es';
 import { v4 } from 'uuid';
 import { logger } from '@/shared/logging/logger';
 import {
@@ -113,12 +113,114 @@ export function isClientMismatchError(errorText: string): boolean {
   return errorCode !== null && OAUTH_CLIENT_ERROR_CODES.has(errorCode);
 }
 
-/**
- * Creates an AbortSignal that times out after the specified duration.
- */
-function createTimeoutSignal(ms: number, externalSignal?: AbortSignal): AbortSignal {
+interface GoogleApiRequestSignal {
+  signal: AbortSignal;
+  timeoutSignal: AbortSignal;
+}
+
+/** Combines a caller cancellation signal with a timeout while retaining their distinct causes. */
+function createGoogleApiRequestSignal(
+  ms: number,
+  externalSignal?: AbortSignal,
+): GoogleApiRequestSignal {
   const timeoutSignal = AbortSignal.timeout(ms);
-  return externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
+  return {
+    signal: externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal,
+    timeoutSignal,
+  };
+}
+
+interface GoogleApiHttpResponse {
+  data: unknown;
+  status: number;
+}
+
+type GoogleApiProxyOptions = Pick<AxiosRequestConfig, 'proxy'>;
+type GoogleApiRequestBody = URLSearchParams | string;
+
+interface GoogleApiRequestOptions extends GoogleApiProxyOptions {
+  data?: GoogleApiRequestBody;
+  headers?: AxiosRequestConfig['headers'];
+  method: 'GET' | 'POST';
+  signal: AbortSignal;
+}
+
+function isSuccessfulHttpStatus(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+function responseDataToText(data: unknown): string {
+  if (isString(data)) {
+    return data;
+  }
+  if (data === null || data === undefined) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
+function isTimedOutHttpRequest(error: unknown, timeoutSignal: AbortSignal): boolean {
+  if (!timeoutSignal.aborted) {
+    return false;
+  }
+
+  if (axios.isCancel(error)) {
+    return true;
+  }
+  if (axios.isAxiosError(error)) {
+    return error.code === 'ECONNABORTED' || error.code === 'ERR_CANCELED';
+  }
+
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+}
+
+function parseAxiosProxyUrl(proxyUrl: string): AxiosProxyConfig {
+  const parsed = new URL(proxyUrl);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Unsupported HTTP proxy protocol: ${parsed.protocol}`);
+  }
+
+  const host = parsed.hostname.startsWith('[') ? parsed.hostname.slice(1, -1) : parsed.hostname;
+  const protocol = parsed.protocol.slice(0, -1);
+  const port = parsed.port === '' ? (protocol === 'https' ? 443 : 80) : Number(parsed.port);
+  const hasCredentials = parsed.username !== '' || parsed.password !== '';
+
+  return {
+    auth: hasCredentials
+      ? {
+          password: decodeURIComponent(parsed.password),
+          username: decodeURIComponent(parsed.username),
+        }
+      : undefined,
+    host,
+    port,
+    protocol,
+  };
+}
+
+async function requestGoogleApi(
+  url: string,
+  options: GoogleApiRequestOptions,
+): Promise<GoogleApiHttpResponse> {
+  const response = await axios.request<unknown>({
+    data: options.data,
+    headers: options.headers,
+    method: options.method,
+    proxy: options.proxy,
+    signal: options.signal,
+    url,
+    validateStatus: () => true,
+  });
+
+  return {
+    data: response.data,
+    status: response.status,
+  };
 }
 
 function waitForAbortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -468,37 +570,6 @@ function parseCreditAmount(value: string | number | undefined): number {
   return 0;
 }
 
-function toAiCredits(
-  payload: Partial<{
-    credits: unknown;
-    remainingCredits: unknown;
-    expiryDate: unknown;
-    expirationDate: unknown;
-  }>,
-): { credits: number; expiryDate: string } | null {
-  const creditsValue =
-    isNumber(payload.credits) || isString(payload.credits)
-      ? payload.credits
-      : isNumber(payload.remainingCredits) || isString(payload.remainingCredits)
-        ? payload.remainingCredits
-        : undefined;
-
-  if (isUndefined(creditsValue)) {
-    return null;
-  }
-
-  const expiryDate = isString(payload.expiryDate)
-    ? payload.expiryDate
-    : isString(payload.expirationDate)
-      ? payload.expirationDate
-      : '';
-
-  return {
-    credits: parseCreditAmount(creditsValue),
-    expiryDate,
-  };
-}
-
 function extractAiCreditsFromProjectContext(
   payload: LoadProjectResponse,
 ): { credits: number; expiryDate: string } | null {
@@ -538,7 +609,7 @@ export class GoogleAPIService {
     );
   }
 
-  private static getFetchOptions(proxyUrl?: string) {
+  private static getAxiosOptions(proxyUrl?: string): GoogleApiProxyOptions {
     const proxyTraceEnabled = process.env.DEBUG_PROXY_TRACE === '1';
 
     if (proxyUrl && proxyUrl.length > 0) {
@@ -546,7 +617,7 @@ export class GoogleAPIService {
         logger.info('[GoogleAPIService] Proxy source: account proxy_url');
       }
       return {
-        dispatcher: new ProxyAgent(proxyUrl),
+        proxy: parseAxiosProxyUrl(proxyUrl),
       };
     }
     try {
@@ -559,7 +630,7 @@ export class GoogleAPIService {
           logger.info('[GoogleAPIService] Proxy source: config.proxy.upstream_proxy.url');
         }
         return {
-          dispatcher: new ProxyAgent(config.proxy.upstream_proxy.url),
+          proxy: parseAxiosProxyUrl(config.proxy.upstream_proxy.url),
         };
       }
     } catch (e) {
@@ -569,7 +640,6 @@ export class GoogleAPIService {
 
     const httpProxy = process.env.http_proxy?.trim() || process.env.HTTP_PROXY?.trim();
     const httpsProxy = process.env.https_proxy?.trim() || process.env.HTTPS_PROXY?.trim();
-    const noProxy = process.env.no_proxy?.trim() || process.env.NO_PROXY?.trim();
     const electronProxyServer = process.env.ELECTRON_PROXY_SERVER?.trim();
 
     if (httpProxy || httpsProxy) {
@@ -578,13 +648,8 @@ export class GoogleAPIService {
           `[GoogleAPIService] Proxy source: HTTP(S)_PROXY env (http: ${httpProxy ?? 'none'}, https: ${httpsProxy ?? 'none'})`,
         );
       }
-      return {
-        dispatcher: new EnvHttpProxyAgent({
-          httpProxy,
-          httpsProxy,
-          noProxy,
-        }),
-      };
+      // Axios' Node adapter reads HTTP(S)_PROXY and NO_PROXY through proxy-from-env.
+      return {};
     }
 
     if (electronProxyServer) {
@@ -594,7 +659,7 @@ export class GoogleAPIService {
         );
       }
       return {
-        dispatcher: new ProxyAgent(electronProxyServer),
+        proxy: parseAxiosProxyUrl(electronProxyServer),
       };
     }
 
@@ -654,36 +719,40 @@ export class GoogleAPIService {
       logger.info(
         `[GoogleAPIService] Attempting token exchange with client=${client.key}, endpoint=${URLS.TOKEN}`,
       );
-      const fetchOpts = this.getFetchOptions(proxyUrl);
+      const axiosOptions = this.getAxiosOptions(proxyUrl);
       logger.info(
-        `[GoogleAPIService] Fetch options: ${JSON.stringify(fetchOpts ? { hasDispatcher: !!fetchOpts.dispatcher } : {})}`,
+        `[GoogleAPIService] Axios options: ${JSON.stringify({ hasExplicitProxy: axiosOptions.proxy !== undefined })}`,
       );
 
-      const response = await fetch(URLS.TOKEN, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params,
-        signal: createTimeoutSignal(REQUEST_TIMEOUT_MS),
-        ...fetchOpts,
-      }).catch((err: unknown) => {
-        logger.error(`[GoogleAPIService] Fetch error for client=${client.key}:`, err);
-        if (err instanceof Error && err.name === 'AbortError') {
+      const requestSignal = createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS);
+      let response: GoogleApiHttpResponse;
+      try {
+        response = await requestGoogleApi(URLS.TOKEN, {
+          data: params,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          method: 'POST',
+          signal: requestSignal.signal,
+          ...axiosOptions,
+        });
+      } catch (error) {
+        logger.error(`[GoogleAPIService] Axios error for client=${client.key}:`, error);
+        if (isTimedOutHttpRequest(error, requestSignal.timeoutSignal)) {
           throw new Error(
             'Token exchange timed out. Please check your network connection and try again.',
           );
         }
-        throw err;
-      });
-
-      logger.info(
-        `[GoogleAPIService] Fetch response received for client=${client.key}: ok=${response.ok}, status=${response.status}`,
-      );
-
-      if (response.ok) {
-        return parseTokenResponse(await response.json(), client.key);
+        throw error;
       }
 
-      const text = await response.text();
+      logger.info(
+        `[GoogleAPIService] Axios response received for client=${client.key}: status=${response.status}`,
+      );
+
+      if (isSuccessfulHttpStatus(response.status)) {
+        return parseTokenResponse(response.data, client.key);
+      }
+
+      const text = responseDataToText(response.data);
       attemptErrors.push(`${client.key} => ${text}`);
       if (isClientMismatchError(text)) {
         logger.warn(
@@ -723,26 +792,30 @@ export class GoogleAPIService {
       });
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const response = await fetch(URLS.TOKEN, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: params,
-          signal: createTimeoutSignal(REQUEST_TIMEOUT_MS, requestSignal),
-          ...this.getFetchOptions(proxyUrl),
-        }).catch((err: unknown) => {
-          if (err instanceof Error && err.name === 'AbortError') {
+        const requestAbort = createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS, requestSignal);
+        let response: GoogleApiHttpResponse;
+        try {
+          response = await requestGoogleApi(URLS.TOKEN, {
+            data: params,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            method: 'POST',
+            signal: requestAbort.signal,
+            ...this.getAxiosOptions(proxyUrl),
+          });
+        } catch (error) {
+          if (isTimedOutHttpRequest(error, requestAbort.timeoutSignal)) {
             throw new Error(
               'Token refresh timed out. Please check your network connection and try again.',
             );
           }
-          throw err;
-        });
-
-        if (response.ok) {
-          return parseTokenResponse(await response.json(), client.key);
+          throw error;
         }
 
-        const text = await response.text();
+        if (isSuccessfulHttpStatus(response.status)) {
+          return parseTokenResponse(response.data, client.key);
+        }
+
+        const text = responseDataToText(response.data);
         const errorCode = extractOAuthErrorCode(text);
         attemptErrors.push(`${client.key} => ${errorCode ?? `HTTP ${response.status}`}`);
         if (errorCode === 'invalid_grant' && attempt === 0) {
@@ -776,28 +849,30 @@ export class GoogleAPIService {
     proxyUrl?: string,
     requestSignal?: AbortSignal,
   ): Promise<UserInfo> {
-    const response = await fetch(URLS.USER_INFO, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: createTimeoutSignal(REQUEST_TIMEOUT_MS, requestSignal),
-      ...this.getFetchOptions(proxyUrl),
-    }).catch((err: unknown) => {
-      if (err instanceof Error) {
-        if (err.name === 'AbortError') {
-          throw new Error(
-            'User info request timed out. Please check your network connection and try again.',
-          );
-        }
+    const requestAbort = createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS, requestSignal);
+    let response: GoogleApiHttpResponse;
+    try {
+      response = await requestGoogleApi(URLS.USER_INFO, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        method: 'GET',
+        signal: requestAbort.signal,
+        ...this.getAxiosOptions(proxyUrl),
+      });
+    } catch (error) {
+      if (isTimedOutHttpRequest(error, requestAbort.timeoutSignal)) {
+        throw new Error(
+          'User info request timed out. Please check your network connection and try again.',
+        );
       }
-      throw err;
-    });
+      throw error;
+    }
 
-    if (!response.ok) {
+    if (!isSuccessfulHttpStatus(response.status)) {
       throw new GoogleUserInfoHttpError(response.status);
     }
 
-    const data = await response.json();
     try {
-      const parsed = UserInfoSchema.parse(data);
+      const parsed = UserInfoSchema.parse(response.data);
 
       return {
         ...parsed,
@@ -825,23 +900,23 @@ export class GoogleAPIService {
 
     for (const endpoint of endpoints) {
       try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
+        const response = await requestGoogleApi(endpoint, {
+          data: JSON.stringify(body),
           headers: buildInternalApiHeaders(accessToken),
-          body: JSON.stringify(body),
-          signal: createTimeoutSignal(REQUEST_TIMEOUT_MS),
-          ...this.getFetchOptions(proxyUrl),
+          method: 'POST',
+          signal: createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS).signal,
+          ...this.getAxiosOptions(proxyUrl),
         });
 
-        if (response.ok) {
-          const data = parseLoadProjectResponse(await response.json());
+        if (isSuccessfulHttpStatus(response.status)) {
+          const data = parseLoadProjectResponse(response.data);
           if (isString(data.cloudaicompanionProject)) {
             projectId = data.cloudaicompanionProject;
           }
           subscriptionTier = resolveSubscriptionTier(data);
           break;
         } else {
-          lastError = new Error(`HTTP ${response.status}: ${await response.text()}`);
+          lastError = new Error(`HTTP ${response.status}: ${responseDataToText(response.data)}`);
           if (endpoint === URLS.LOAD_PROJECT && response.status === 429) {
             logger.warn(
               '[GoogleAPIService] Prod loadCodeAssist returned 429, falling back to sandbox endpoint',
@@ -887,30 +962,30 @@ export class GoogleAPIService {
     proxyUrl?: string,
   ): Promise<{ credits: number; expiryDate: string } | null> {
     try {
-      const fetchOptions = this.getFetchOptions(proxyUrl);
+      const axiosOptions = this.getAxiosOptions(proxyUrl);
       const discoveryVersion = resolveLocalInstalledVersion() ?? FALLBACK_VERSION;
-      const fallbackResponse = await fetch(URLS.DAILY_LOAD_PROJECT, {
-        method: 'POST',
-        headers: buildInternalApiHeaders(accessToken),
-        body: JSON.stringify({
+      const fallbackResponse = await requestGoogleApi(URLS.DAILY_LOAD_PROJECT, {
+        data: JSON.stringify({
           metadata: {
             ide_type: 'ANTIGRAVITY',
             ide_version: discoveryVersion,
             ide_name: 'antigravity',
           },
         }),
-        signal: createTimeoutSignal(REQUEST_TIMEOUT_MS),
-        ...fetchOptions,
+        headers: buildInternalApiHeaders(accessToken),
+        method: 'POST',
+        signal: createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS).signal,
+        ...axiosOptions,
       });
 
-      if (!fallbackResponse.ok) {
+      if (!isSuccessfulHttpStatus(fallbackResponse.status)) {
         if (fallbackResponse.status === 401) {
           throw new Error('UNAUTHORIZED');
         }
         return null;
       }
 
-      const fallbackData = parseLoadProjectResponse(await fallbackResponse.json());
+      const fallbackData = parseLoadProjectResponse(fallbackResponse.data);
       return extractAiCreditsFromProjectContext(fallbackData);
     } catch (error) {
       if (error instanceof Error && error.message === 'UNAUTHORIZED') {
@@ -969,9 +1044,9 @@ export class GoogleAPIService {
 
     const { projectId, subscriptionTier } = projectContext;
 
-    const payload: Record<string, unknown> = projectId ? { project: projectId } : {};
+    const payload: { project?: string } = projectId ? { project: projectId } : {};
     let lastError: Error | null = null;
-    const fetchOptions = this.getFetchOptions(proxyUrl);
+    const axiosOptions = this.getAxiosOptions(proxyUrl);
 
     for (let endpointIndex = 0; endpointIndex < QUOTA_API_ENDPOINTS.length; endpointIndex++) {
       const endpoint = QUOTA_API_ENDPOINTS[endpointIndex];
@@ -981,15 +1056,15 @@ export class GoogleAPIService {
 
       while (true) {
         try {
-          const response = await fetch(endpoint, {
-            method: 'POST',
+          const response = await requestGoogleApi(endpoint, {
+            data: JSON.stringify(currentPayload),
             headers: buildInternalApiHeaders(accessToken),
-            body: JSON.stringify(currentPayload),
-            signal: createTimeoutSignal(REQUEST_TIMEOUT_MS),
-            ...fetchOptions,
+            method: 'POST',
+            signal: createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS).signal,
+            ...axiosOptions,
           });
 
-          if (!response.ok) {
+          if (!isSuccessfulHttpStatus(response.status)) {
             const status = response.status;
 
             if (status === 403) {
@@ -1008,7 +1083,7 @@ export class GoogleAPIService {
               throw new Error('UNAUTHORIZED');
             }
 
-            const text = await response.text();
+            const text = responseDataToText(response.data);
             const errorMsg = `HTTP ${status} - ${text}`;
             if (hasNextEndpoint && this.shouldFallbackQuotaEndpoint(status)) {
               logger.warn(
@@ -1023,9 +1098,9 @@ export class GoogleAPIService {
             throw new Error(errorMsg);
           }
 
-          const data = parseFetchModelsResponse(await response.json());
+          const data = parseFetchModelsResponse(response.data);
           const result = this.toQuotaData(data, subscriptionTier);
-          const quotaGroups = await this.fetchQuotaSummary(accessToken, projectId, fetchOptions);
+          const quotaGroups = await this.fetchQuotaSummary(accessToken, projectId, axiosOptions);
           if (quotaGroups) {
             result.quota_groups = quotaGroups;
           }
@@ -1065,9 +1140,9 @@ export class GoogleAPIService {
   private static async fetchQuotaSummary(
     accessToken: string,
     projectId: string | undefined,
-    fetchOptions: ReturnType<typeof GoogleAPIService.getFetchOptions>,
+    axiosOptions: GoogleApiProxyOptions,
   ): Promise<QuotaGroup[] | undefined> {
-    const payload: Record<string, unknown> = projectId ? { project: projectId } : {};
+    const payload: { project?: string } = projectId ? { project: projectId } : {};
 
     for (const endpoint of QUOTA_SUMMARY_ENDPOINTS) {
       let currentPayload = { ...payload };
@@ -1075,15 +1150,15 @@ export class GoogleAPIService {
 
       while (true) {
         try {
-          const response = await fetch(endpoint, {
-            method: 'POST',
+          const response = await requestGoogleApi(endpoint, {
+            data: JSON.stringify(currentPayload),
             headers: buildInternalApiHeaders(accessToken),
-            body: JSON.stringify(currentPayload),
-            signal: createTimeoutSignal(REQUEST_TIMEOUT_MS),
-            ...fetchOptions,
+            method: 'POST',
+            signal: createGoogleApiRequestSignal(REQUEST_TIMEOUT_MS).signal,
+            ...axiosOptions,
           });
 
-          if (!response.ok) {
+          if (!isSuccessfulHttpStatus(response.status)) {
             logger.warn(
               `[GoogleAPIService] Quota summary API ${endpoint} returned ${response.status}`,
             );
@@ -1101,7 +1176,7 @@ export class GoogleAPIService {
             break;
           }
 
-          return toQuotaGroups(parseQuotaSummaryResponse(await response.json()));
+          return toQuotaGroups(parseQuotaSummaryResponse(response.data));
         } catch (error) {
           logger.warn(`[GoogleAPIService] Quota summary API request failed at ${endpoint}`, error);
           break;

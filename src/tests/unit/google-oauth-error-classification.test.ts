@@ -5,6 +5,7 @@ import {
   OAuthTokenRefreshError,
 } from '@/modules/cloud-account/services/GoogleAPIService';
 import { OAuthClientRegistryService } from '@/modules/cloud-account/services/OAuthClientRegistryService';
+import { mockAxiosRequests } from '../helpers/mock-axios-request';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -48,7 +49,7 @@ describe('Google OAuth client error classification', () => {
           headers: { 'content-type': 'application/json' },
         }),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
 
     const refresh = GoogleAPIService.refreshAccessToken('refresh-token');
     const rejection = expect(refresh).rejects.toBeInstanceOf(OAuthTokenRefreshError);
@@ -76,7 +77,7 @@ describe('Google OAuth client error classification', () => {
           headers: { 'content-type': 'application/json' },
         }),
     );
-    vi.stubGlobal('fetch', fetchMock);
+    mockAxiosRequests(fetchMock);
     const controller = new AbortController();
 
     const refresh = GoogleAPIService.refreshAccessToken(
@@ -97,8 +98,7 @@ describe('Google OAuth client error classification', () => {
     vi.spyOn(OAuthClientRegistryService, 'getCandidateClients').mockReturnValue([
       { key: 'client-a', client_id: 'id', client_secret: 'secret', source: 'custom' },
     ] as never);
-    vi.stubGlobal(
-      'fetch',
+    mockAxiosRequests(
       vi.fn(
         async () =>
           new Response(
@@ -130,8 +130,7 @@ describe('Google OAuth client error classification', () => {
         is_builtin: false,
       },
     ]);
-    vi.stubGlobal(
-      'fetch',
+    mockAxiosRequests(
       vi.fn().mockResolvedValue({
         ok: true,
         json: vi.fn().mockResolvedValue({

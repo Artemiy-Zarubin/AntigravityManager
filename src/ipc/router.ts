@@ -6,13 +6,16 @@ import { antigravityRuntimeRouter } from '@/modules/antigravity-runtime/ipc/rout
 import { appShellRouter } from '@/modules/app-shell/ipc/router';
 
 import { ORPCError, os } from '@orpc/server';
-import { isPlainObject, isString } from 'lodash-es';
+import { isString } from 'lodash-es';
 import { z } from 'zod';
 import { logger } from '../shared/logging/logger';
-import { AppError, getAppErrorData } from '@/shared/errors/appError';
+import { AppError, getAppErrorData, type AppErrorData } from '@/shared/errors/appError';
+import {
+  LocalAccountImportORPCErrorData,
+  parseLocalAccountImportORPCErrorData,
+} from '@/modules/cloud-account/local-import/ipc/error-data';
 
 interface BackendErrorDetails {
-  [key: string]: unknown;
   backendCode?: string;
   backendStatus?: number;
   backendName: string;
@@ -21,6 +24,12 @@ interface BackendErrorDetails {
   backendValue?: string;
   requestPath: string;
 }
+
+/** A closed IPC error envelope with only explicitly validated feature extensions. */
+type PublicORPCErrorData =
+  | BackendErrorDetails
+  | (BackendErrorDetails & AppErrorData)
+  | (BackendErrorDetails & LocalAccountImportORPCErrorData);
 
 function stringifyUnknownError(error: unknown): string {
   if (isString(error)) {
@@ -69,44 +78,58 @@ function createBackendErrorDetails(error: unknown, requestPath: string): Backend
   };
 }
 
+function createPublicORPCErrorData(error: unknown, requestPath: string): PublicORPCErrorData {
+  const backendDetails = createBackendErrorDetails(error, requestPath);
+  const appErrorData = getAppErrorData(error);
+  if (appErrorData) {
+    return {
+      ...backendDetails,
+      ...appErrorData,
+    };
+  }
+
+  const cloudAccountErrorData =
+    error instanceof ORPCError ? parseLocalAccountImportORPCErrorData(error.data) : null;
+  if (cloudAccountErrorData) {
+    return {
+      ...backendDetails,
+      ...cloudAccountErrorData,
+    };
+  }
+
+  return backendDetails;
+}
+
 export function toPublicORPCError(
   error: unknown,
   requestPath: string,
-): ORPCError<string, Record<string, unknown>> {
+): ORPCError<string, PublicORPCErrorData> {
   const message = stringifyUnknownError(error);
-  const backendDetails = createBackendErrorDetails(error, requestPath);
+  const publicData = createPublicORPCErrorData(error, requestPath);
 
   if (error instanceof AppError) {
     return new ORPCError(error.transportCode, {
       message,
-      data: {
-        ...backendDetails,
-        ...getAppErrorData(error),
-      },
+      data: publicData,
     });
   }
 
   if (error instanceof ORPCError) {
-    const existingData = isPlainObject(error.data) ? error.data : {};
     return new ORPCError(error.code, {
       message,
-      data: {
-        ...backendDetails,
-        ...existingData,
-      },
+      data: publicData,
     });
   }
 
   return new ORPCError('INTERNAL_SERVER_ERROR', {
     message,
-    data: backendDetails,
+    data: publicData,
   });
 }
 
 // Log middleware setup
-const logMiddleware = os.middleware(async (opts: any) => {
-  const { next, path, meta } = opts;
-  const requestPath = JSON.stringify(path || meta?.path || 'unknown');
+const logMiddleware = os.middleware(async ({ next, path }) => {
+  const requestPath = JSON.stringify(path || 'unknown');
 
   try {
     const result = await next({});

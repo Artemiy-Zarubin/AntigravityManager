@@ -5,17 +5,14 @@ import fastifyMultipart from '@fastify/multipart';
 import { AppModule } from './app.module';
 import { logger } from '../shared/logging/logger';
 import { AccountLeaseService } from '../modules/proxy-gateway/server/modules/account-lease/account-lease.service';
-import {
-  OpenAIOperations,
-  type ResponsesRequestBody,
-} from '../modules/proxy-gateway/server/modules/openai/openai-operations.service';
+import { OpenAIOperations } from '../modules/proxy-gateway/server/modules/openai/openai-operations.service';
 import { ProxyService } from '../modules/proxy-gateway/server/proxy.service';
 import { DEFAULT_MAX_FILE_BYTES } from '../modules/proxy-gateway/server/modules/files/file-store.types';
 import { attachOpenAIResponsesWebSocketServer } from '../modules/proxy-gateway/server/modules/openai/responses/openai-responses-websocket.server';
+import { parseResponsesRequestBody } from '../modules/proxy-gateway/server/modules/openai/responses/openai-responses-request';
 import {
   extractApiKeyToken,
   hasConfiguredApiKey,
-  type RequestHeaders,
 } from '../modules/proxy-gateway/server/guards/api-key-auth.util';
 import { isObservable } from 'rxjs';
 
@@ -133,13 +130,15 @@ export async function bootstrapNestServer(config: ProxyConfig): Promise<NestServ
         const configuredApiKey = getConfiguredApiKey();
         return (
           !hasConfiguredApiKey(configuredApiKey) ||
-          extractApiKeyToken(request.headers as RequestHeaders) === configuredApiKey
+          extractApiKeyToken(request.headers) === configuredApiKey
         );
       },
       streamRequest: async (request) => {
-        const prepared = openAIOperations.prepareResponsesRequest(
-          request as unknown as ResponsesRequestBody,
-        );
+        const body = parseResponsesRequestBody(request);
+        if (!body) {
+          throw new Error('Invalid Responses WebSocket request');
+        }
+        const prepared = openAIOperations.prepareResponsesRequest(body);
         if (!prepared) {
           throw new Error(
             `Unknown or expired previous_response_id: ${String(request.previous_response_id ?? '')}`,

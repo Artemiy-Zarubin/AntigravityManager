@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { z } from 'zod';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
 import { CredentialStoreInjectionAdapter } from '@/modules/cloud-account/persistence/credential-store-injection-adapter';
 import { CloudAccountDeviceBindingStore } from '@/modules/cloud-account/persistence/cloud-account-device-binding-store';
@@ -8,7 +9,12 @@ import {
   type OAuthClientDescriptor,
   type TokenResponse,
 } from '@/modules/cloud-account/services/GoogleAPIService';
-import { CloudAccount, CloudAccountExportSchema } from '@/modules/cloud-account/types';
+import {
+  AutoSwitchModelsConfigSchema,
+  CloudAccount,
+  CloudAccountExportSchema,
+  type AutoSwitchModelConfig,
+} from '@/modules/cloud-account/types';
 import { logger } from '@/shared/logging/logger';
 import { normalizeTrustedGoogleValidationUrl } from '@/modules/cloud-account/utils/google-validation-url';
 
@@ -39,6 +45,7 @@ import {
 } from '@/modules/cloud-account/utils/account-status';
 import { withTimingTrace } from '@/shared/observability/timingTrace';
 import { AppError } from '@/shared/errors/appError';
+import { hasErrorCode } from '@/shared/errors/error-guards';
 import { CloudMonitorService } from '@/modules/cloud-account/services/CloudMonitorService';
 import {
   CLOUD_ACCOUNT_REAUTH_REQUIRED_REASON,
@@ -54,7 +61,7 @@ function notifyTrayUpdate(account: CloudAccount) {
   try {
     // Fetch language setting. Default to 'en' if not set.
 
-    const lang = CloudAccountSettingsStore.getSetting<string>('language', 'en');
+    const lang = CloudAccountSettingsStore.getSetting('language', 'en', z.string());
     updateTrayMenu(account, lang);
   } catch (error) {
     logger.warn('Failed to update tray after cloud account update', error);
@@ -64,6 +71,8 @@ function notifyTrayUpdate(account: CloudAccount) {
 const ACTIVE_OAUTH_CLIENT_KEY_SETTING = 'active_oauth_client_key';
 const OAUTH_CLIENT_KEY_BACKFILL_DONE_SETTING = 'oauth_client_key_backfill_v1_done';
 const ENTERPRISE_OAUTH_CLIENT_KEY = 'antigravity_enterprise';
+const BooleanSettingSchema = z.boolean();
+const StringSettingSchema = z.string();
 
 function normalizeAccountEmail(email: string | undefined): string {
   return (email ?? '').trim().toLowerCase();
@@ -238,9 +247,10 @@ async function clearAccountStatus(account: CloudAccount): Promise<void> {
 }
 
 function hydrateActiveOAuthClientFromSettings(): void {
-  const preferredClientKey = CloudAccountSettingsStore.getSetting<string>(
+  const preferredClientKey = CloudAccountSettingsStore.getSetting(
     ACTIVE_OAUTH_CLIENT_KEY_SETTING,
     '',
+    StringSettingSchema,
   );
   if (isString(preferredClientKey) && !isEmpty(preferredClientKey.trim())) {
     try {
@@ -258,9 +268,10 @@ function hydrateActiveOAuthClientFromSettings(): void {
 async function backfillMissingOAuthClientKeyForLegacyAccounts(
   accounts: CloudAccount[],
 ): Promise<boolean> {
-  const backfillDone = CloudAccountSettingsStore.getSetting<boolean>(
+  const backfillDone = CloudAccountSettingsStore.getSetting(
     OAUTH_CLIENT_KEY_BACKFILL_DONE_SETTING,
     false,
+    BooleanSettingSchema,
   );
   if (backfillDone) {
     return false;
@@ -562,8 +573,9 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
     notifyTrayUpdate(account);
     CloudMonitorService.scheduleWeeklyWarmup([account]);
     return account;
-  } catch (error: any) {
-    if (error.message === 'UNAUTHORIZED') {
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : '';
+    if (errorMessage === 'UNAUTHORIZED') {
       logger.warn(`Received 401 Unauthorized for ${account.email}; forcing token refresh`);
       try {
         const refreshedToken = await CloudAccountRefreshService.refreshAccessToken(
@@ -625,7 +637,7 @@ export async function refreshAccountQuota(accountId: string): Promise<CloudAccou
         await markAccountStatusFromError(account, refreshError);
         throw refreshError;
       }
-    } else if (error.message === 'FORBIDDEN') {
+    } else if (errorMessage === 'FORBIDDEN') {
       logger.warn(`Received 403 Forbidden for ${account.email}; marking account status from error`);
       await markAccountStatusFromError(account, error);
       return account;
@@ -748,9 +760,9 @@ export async function switchCloudAccount(
                 await fs.promises.copyFile(dbPath, backupPath);
                 logger.info(`Backed up database to ${backupPath}`);
                 break; // Success, stop trying other paths
-              } catch (error: any) {
+              } catch (error) {
                 // If file not found, just try the next path
-                if (error.code === 'ENOENT') {
+                if (hasErrorCode(error, 'ENOENT')) {
                   continue;
                 }
                 logger.error(`Failed to backup database at ${dbPath}`, error);
@@ -771,9 +783,10 @@ export async function switchCloudAccount(
           notifyTrayUpdate(account);
         },
       });
-    } catch (err: any) {
-      logger.error('Failed to switch cloud account', err);
-      throw new Error(`Switch failed: ${err.message || 'Unknown error'}`);
+    } catch (error) {
+      logger.error('Failed to switch cloud account', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Switch failed: ${errorMessage || 'Unknown error'}`);
     }
   });
 }
@@ -874,7 +887,7 @@ export async function openCloudIdentityStorageFolder(): Promise<void> {
 }
 
 export function getAutoSwitchEnabled(): boolean {
-  return CloudAccountSettingsStore.getSetting<boolean>('auto_switch_enabled', false);
+  return CloudAccountSettingsStore.getSetting('auto_switch_enabled', false, BooleanSettingSchema);
 }
 
 export async function setAutoSwitchEnabled(enabled: boolean): Promise<void> {
@@ -883,21 +896,17 @@ export async function setAutoSwitchEnabled(enabled: boolean): Promise<void> {
   if (enabled) {
     const { CloudMonitorService } =
       await import('@/modules/cloud-account/services/CloudMonitorService');
-    CloudMonitorService.poll().catch((err: any) =>
-      logger.error('Failed to poll after enabling auto-switch', err),
+    CloudMonitorService.poll().catch((error: unknown) =>
+      logger.error('Failed to poll after enabling auto-switch', error),
     );
   }
 }
 
-export interface AutoSwitchModelConfig {
-  enabled: boolean;
-  priority: boolean;
-}
-
 export function getAutoSwitchModelsConfig(): Record<string, AutoSwitchModelConfig> {
-  return CloudAccountSettingsStore.getSetting<Record<string, AutoSwitchModelConfig>>(
+  return CloudAccountSettingsStore.getSetting(
     'auto_switch_models',
     {},
+    AutoSwitchModelsConfigSchema,
   );
 }
 
@@ -967,11 +976,18 @@ export async function exportCloudAccounts(stripTokens = false): Promise<string> 
 
 export type ImportStrategy = 'merge' | 'overwrite' | 'skip-existing';
 
+interface CloudAccountImportResult {
+  imported: number;
+  skipped: number;
+  updated: number;
+  errors: string[];
+}
+
 export async function importCloudAccounts(
   jsonContent: string,
   strategy: ImportStrategy = 'merge',
-): Promise<{ imported: number; skipped: number; updated: number; errors: string[] }> {
-  const result = { imported: 0, skipped: 0, updated: 0, errors: [] as string[] };
+): Promise<CloudAccountImportResult> {
+  const result: CloudAccountImportResult = { imported: 0, skipped: 0, updated: 0, errors: [] };
 
   let parsed: unknown;
   try {
@@ -1080,8 +1096,9 @@ export async function importCloudAccounts(
         await CloudAccountRepo.addAccount(newAccount);
         result.imported++;
       }
-    } catch (error: any) {
-      result.errors.push(`Failed to import ${importedAccount.email}: ${error.message}`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      result.errors.push(`Failed to import ${importedAccount.email}: ${errorMessage}`);
     }
   }
 

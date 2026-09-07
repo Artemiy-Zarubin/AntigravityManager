@@ -6,6 +6,7 @@ import {
   type LocalAccountImportCoordinatorService,
 } from '../local-account-import-coordinator.service';
 import { LocalAccountDiscoverySourceIdSchema } from '../types';
+import type { LocalAccountImportORPCErrorData } from './error-data';
 
 const LocalAccountSourceReferenceSchema = z
   .object({
@@ -176,7 +177,7 @@ const LocalAccountPostImportTaskInputSchema = z
 
 export function toLocalAccountImportORPCError(
   error: unknown,
-): ORPCError<string, Record<string, unknown>> {
+): ORPCError<string, LocalAccountImportORPCErrorData> {
   if (!(error instanceof LocalAccountImportCoordinatorError)) {
     return new ORPCError('INTERNAL_SERVER_ERROR', {
       message: 'The local account import request failed.',

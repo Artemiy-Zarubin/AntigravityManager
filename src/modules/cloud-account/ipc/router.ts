@@ -19,7 +19,6 @@ import {
   setAutoSwitchEnabled,
   getAutoSwitchModelsConfig,
   setAutoSwitchModelsConfig,
-  type AutoSwitchModelConfig,
   forcePollCloudMonitor,
   startAuthFlow,
   listOAuthClients,
@@ -33,7 +32,7 @@ import {
   AGY_SYNC_FROM_IDE_UNSUPPORTED_MESSAGE,
   IdeAccountImportAdapter,
 } from '@/modules/cloud-account/persistence/ide-account-import-adapter';
-import { CloudAccountSchema } from '@/modules/cloud-account/types';
+import { AutoSwitchModelsConfigSchema, CloudAccountSchema } from '@/modules/cloud-account/types';
 import { AntigravityAppTargetSchema } from '@/shared/platform/antigravityAppTarget';
 import {
   DeviceProfileSchema,
@@ -44,11 +43,20 @@ import { getSwitchMetricsSnapshot } from '@/modules/antigravity-runtime/switch/s
 import { getSwitchGuardSnapshot } from '@/modules/antigravity-runtime/switch/switchGuard';
 import { getDeviceHardeningSnapshot } from '@/modules/identity-profile/ipc/handler';
 import { localAccountImportRouter } from '@/modules/cloud-account/local-import/ipc/router';
+
 import { WeeklyWarmupConfigSchema } from '@/modules/cloud-account/services/weekly-warmup-contract';
 import { getWeeklyWarmupConfig, setWeeklyWarmupConfig } from './weekly-warmup';
 import { getSecurityStatus } from '@/shared/security/security';
 
 const switchOwnerSchema = z.enum(['local-account-switch', 'cloud-account-switch']);
+
+interface SyncLocalAccountORPCErrorData {
+  backendName: string;
+  backendMessage: string;
+  backendStack?: string;
+  requestPath: string;
+}
+
 const SecurityStatusSchema = z.object({
   state: z.enum(['secure', 'degraded', 'locked']),
   masterKeySource: z
@@ -106,7 +114,7 @@ function extractErrorMessage(error: unknown): string {
 function createSyncLocalAccountORPCError(
   code: 'UNAUTHORIZED' | 'BAD_REQUEST' | 'INTERNAL_SERVER_ERROR',
   error: unknown,
-): ORPCError<string, Record<string, unknown>> {
+): ORPCError<string, SyncLocalAccountORPCErrorData> {
   const message = extractErrorMessage(error);
   return new ORPCError(code, {
     message,
@@ -121,7 +129,7 @@ function createSyncLocalAccountORPCError(
 
 export function toSyncLocalAccountORPCError(
   error: unknown,
-): ORPCError<string, Record<string, unknown>> {
+): ORPCError<string, SyncLocalAccountORPCErrorData> {
   const message = extractErrorMessage(error);
   const normalizedMessage = message.toLowerCase();
 
@@ -203,33 +211,15 @@ export const cloudRouter = os.router({
       await setAutoSwitchEnabled(input.enabled);
     }),
 
-  getAutoSwitchModelsConfig: os
-    .output(
-      z.record(
-        z.string(),
-        z.object({
-          enabled: z.boolean(),
-          priority: z.boolean(),
-        }),
-      ),
-    )
-    .handler(async () => {
-      return getAutoSwitchModelsConfig();
-    }),
+  getAutoSwitchModelsConfig: os.output(AutoSwitchModelsConfigSchema).handler(async () => {
+    return getAutoSwitchModelsConfig();
+  }),
 
   setAutoSwitchModelsConfig: os
-    .input(
-      z.record(
-        z.string(),
-        z.object({
-          enabled: z.boolean(),
-          priority: z.boolean(),
-        }),
-      ),
-    )
+    .input(AutoSwitchModelsConfigSchema)
     .output(z.void())
     .handler(async ({ input }) => {
-      setAutoSwitchModelsConfig(input as Record<string, AutoSwitchModelConfig>);
+      setAutoSwitchModelsConfig(input);
     }),
 
   getWeeklyWarmupConfig: os.output(WeeklyWarmupConfigSchema).handler(async () => {
@@ -289,8 +279,8 @@ export const cloudRouter = os.router({
     .handler(async ({ input }) => {
       try {
         await CloudAccountRepo.setAccountProxy(input.accountId, input.proxyUrl);
-      } catch (error: any) {
-        logger.error('[ORPC] setAccountProxy error:', error.message, error.stack);
+      } catch (error) {
+        logger.error('[ORPC] setAccountProxy error:', error);
         throw error;
       }
     }),
@@ -303,8 +293,8 @@ export const cloudRouter = os.router({
         const result = await IdeAccountImportAdapter.syncFromIde(input?.appTarget);
 
         return result;
-      } catch (error: any) {
-        logger.error('[ORPC] syncLocalAccount error:', error.message, error.stack);
+      } catch (error) {
+        logger.error('[ORPC] syncLocalAccount error:', error);
         throw toSyncLocalAccountORPCError(error);
       }
     }),
@@ -373,8 +363,8 @@ export const cloudRouter = os.router({
     .handler(async ({ input }) => {
       try {
         return await exportCloudAccounts(input.stripTokens);
-      } catch (error: any) {
-        logger.error('[ORPC] exportCloudAccounts error:', error.message, error.stack);
+      } catch (error) {
+        logger.error('[ORPC] exportCloudAccounts error:', error);
         throw error;
       }
     }),
@@ -397,8 +387,8 @@ export const cloudRouter = os.router({
     .handler(async ({ input }) => {
       try {
         return await importCloudAccounts(input.jsonContent, input.strategy);
-      } catch (error: any) {
-        logger.error('[ORPC] importCloudAccounts error:', error.message, error.stack);
+      } catch (error) {
+        logger.error('[ORPC] importCloudAccounts error:', error);
         throw error;
       }
     }),

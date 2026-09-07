@@ -2,9 +2,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { createHash, randomBytes } from 'crypto';
-import { isBoolean, isNumber, isObjectLike, isString } from 'lodash-es';
+import { z } from 'zod';
+import { isObjectLike, isString } from 'lodash-es';
 import type { AntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
-import type { DeviceProfile } from '@/modules/identity-profile/types';
+import { DeviceProfileSchema, type DeviceProfile } from '@/modules/identity-profile/types';
 import { logger } from '@/shared/logging/logger';
 import {
   getAgentDir,
@@ -66,6 +67,12 @@ interface LastKnownGoodMarker {
   savedAt: number;
   hasStateDb: boolean;
 }
+
+const LastKnownGoodMarkerSchema = z.object({
+  version: z.literal(1),
+  savedAt: z.number(),
+  hasStateDb: z.boolean(),
+});
 
 interface DeviceHardeningState {
   consecutiveApplyFailures: number;
@@ -151,20 +158,9 @@ function readLastKnownGoodMarker(): LastKnownGoodMarker | null {
 
   try {
     const content = fs.readFileSync(markerPath, 'utf-8');
-    const parsed = JSON.parse(content) as Partial<LastKnownGoodMarker>;
-    if (
-      parsed &&
-      parsed.version === 1 &&
-      isNumber(parsed.savedAt) &&
-      isBoolean(parsed.hasStateDb)
-    ) {
-      return {
-        version: 1,
-        savedAt: parsed.savedAt,
-        hasStateDb: parsed.hasStateDb,
-      };
-    }
-    return null;
+    const rawMarker: unknown = JSON.parse(content);
+    const parsed = LastKnownGoodMarkerSchema.safeParse(rawMarker);
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -554,7 +550,8 @@ export function loadGlobalOriginalProfile(): DeviceProfile | null {
 
   try {
     const raw = fs.readFileSync(baselinePath, 'utf-8');
-    return JSON.parse(raw) as DeviceProfile;
+    const rawProfile: unknown = JSON.parse(raw);
+    return DeviceProfileSchema.parse(rawProfile);
   } catch (error) {
     logger.warn('Failed to load global original device profile', error);
     return null;

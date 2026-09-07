@@ -24,6 +24,7 @@ import {
   splitNamespaceToolName,
 } from '@/modules/proxy-gateway/antigravity/ToolNamespace';
 import { ClaudeRequest, ClaudeResponse } from '@/modules/proxy-gateway/antigravity/types';
+import { resolveOpenAIImageUrl } from '../openai-image-url';
 import { parseOpenAIInputAudio } from './openai-input-audio';
 import {
   AnthropicChatRequest,
@@ -151,8 +152,9 @@ export function convertOpenAIPartsToAnthropicContent(
       continue;
     }
 
-    if (part.type === 'image_url' && part.image_url?.url) {
-      const url = part.image_url.url;
+    const imageUrl = part.type === 'image_url' ? resolveOpenAIImageUrl(part.image_url) : null;
+    if (imageUrl) {
+      const url = imageUrl;
       const dataUri = url.match(/^data:(?<mime>[^;]+);base64,(?<data>.+)$/);
       if (dataUri?.groups?.mime && dataUri.groups.data) {
         blocks.push({

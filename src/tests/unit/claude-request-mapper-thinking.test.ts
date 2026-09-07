@@ -21,6 +21,45 @@ function createThinkingRequest(model: string): ClaudeRequest {
 }
 
 describe('ClaudeRequestMapper thinking support', () => {
+  it('preserves tool-call arguments instead of treating them as a JSON Schema', () => {
+    const body = transformClaudeRequestIn({
+      model: 'gemini-3-flash',
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call-configure',
+              name: 'configure',
+              input: {
+                default: 'preserve-me',
+                examples: ['safe'],
+                format: 'json',
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const functionCall = body.request.contents[0]?.parts.find(
+      (part) => part.functionCall?.id === 'call-configure',
+    )?.functionCall;
+
+    expect(functionCall).toEqual(
+      expect.objectContaining({
+        args: {
+          default: 'preserve-me',
+          examples: ['safe'],
+          format: 'json',
+        },
+        id: 'call-configure',
+        name: 'configure',
+      }),
+    );
+  });
+
   it.each(['gemini-3.1-pro-low', 'gemini-3-pro-low'])(
     'omits thinkingConfig for low-tier Gemini Pro variant %s',
     (model) => {

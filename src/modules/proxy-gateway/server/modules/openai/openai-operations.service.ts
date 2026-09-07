@@ -45,6 +45,7 @@ import {
 import { parseImageMultipartRequest } from '@/modules/proxy-gateway/server/modules/openai/media/image-multipart-request';
 import { safeStringifyPacket } from '@/shared/security/sensitiveDataMasking';
 import { BaseProxyController } from '@/modules/proxy-gateway/server/common/base-proxy.controller';
+import { resolveOpenAIImageUrl } from './openai-image-url';
 import { OpenAIService } from './openai.service';
 export type { ResponsesRequestBody } from './responses/openai-responses-request';
 import {
@@ -54,7 +55,6 @@ import {
   extractCompletedResponsesEvent,
   normalizeResponsesInputItems,
   parseResponsesSessionResponse,
-  resolveImageUrl,
   resolveInlineData,
 } from './responses/openai-responses-request';
 
@@ -798,7 +798,7 @@ export class OpenAIOperations extends BaseProxyController {
           textParts.push(block.text);
         }
         if (block.type === 'image_url') {
-          const imageUrl = resolveImageUrl(block as unknown as Record<string, unknown>);
+          const imageUrl = resolveOpenAIImageUrl(block.image_url);
           const inlineData = resolveInlineData(imageUrl, 'image/png');
           if (inlineData) {
             parts.push({

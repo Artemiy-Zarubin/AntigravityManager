@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { cleanJsonSchema } from '@/modules/proxy-gateway/antigravity/JsonSchemaUtils';
+import {
+  cleanJsonSchema,
+  type JsonSchemaMap,
+} from '@/modules/proxy-gateway/antigravity/JsonSchemaUtils';
 
 /**
  * Gemini rejects `allOf`, `anyOf` and `oneOf`, so the sanitiser removes them. Removing the
@@ -9,7 +12,7 @@ import { cleanJsonSchema } from '@/modules/proxy-gateway/antigravity/JsonSchemaU
  */
 describe('JSON schema branch collapse', () => {
   it('keeps properties declared only inside anyOf', () => {
-    const schema = {
+    const schema: JsonSchemaMap = {
       type: 'object',
       anyOf: [{ type: 'object', properties: { city: { type: 'string' } }, required: ['city'] }],
     };
@@ -22,7 +25,7 @@ describe('JSON schema branch collapse', () => {
   });
 
   it('merges every allOf branch and unions required', () => {
-    const schema = {
+    const schema: JsonSchemaMap = {
       type: 'object',
       allOf: [
         { properties: { a: { type: 'string' } }, required: ['a'] },
@@ -39,7 +42,7 @@ describe('JSON schema branch collapse', () => {
   });
 
   it('does not let a branch overwrite what the node already declares', () => {
-    const schema = {
+    const schema: JsonSchemaMap = {
       type: 'object',
       properties: { city: { type: 'string', description: 'declared on the node' } },
       oneOf: [{ properties: { city: { type: 'number' } } }],
@@ -53,7 +56,7 @@ describe('JSON schema branch collapse', () => {
   });
 
   it('leaves a schema without branches untouched', () => {
-    const schema = { type: 'object', properties: { city: { type: 'string' } } };
+    const schema: JsonSchemaMap = { type: 'object', properties: { city: { type: 'string' } } };
 
     cleanJsonSchema(schema);
 

@@ -411,4 +411,36 @@ describe('ClaudeRequestMapper cache compatibility', () => {
     transformClaudeRequestIn(request, 'project-a', 'test-agent');
     expect(jsonSchemaMocks.normalizeObjectJsonSchema).toHaveBeenCalledTimes(1);
   });
+
+  it('returns a fresh tool declaration copy from the cache', () => {
+    const request = createRequest({
+      tools: [
+        {
+          name: 'cache_copy_probe_tool',
+          input_schema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+            },
+          },
+        },
+      ],
+    });
+
+    const first = transformClaudeRequestIn(request, 'project-a', 'test-agent');
+    const firstDeclaration = first.request.tools?.[0]?.functionDeclarations?.[0];
+    expect(firstDeclaration).toBeDefined();
+    if (!firstDeclaration) {
+      throw new Error('Expected a function declaration for the cached tool.');
+    }
+
+    firstDeclaration.name = 'mutated_tool_name';
+
+    const second = transformClaudeRequestIn(request, 'project-a', 'test-agent');
+
+    expect(second.request.tools?.[0]?.functionDeclarations?.[0]?.name).toBe(
+      'cache_copy_probe_tool',
+    );
+    expect(jsonSchemaMocks.normalizeObjectJsonSchema).toHaveBeenCalledTimes(1);
+  });
 });

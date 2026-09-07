@@ -56,10 +56,12 @@ export interface OpenAIMessage {
 export interface OpenAIContentPart {
   type: 'text' | 'image_url' | 'input_audio' | 'audio';
   text?: string;
-  image_url?: {
-    url: string;
-    detail?: 'auto' | 'low' | 'high';
-  };
+  image_url?:
+    | string
+    | {
+        url: string;
+        detail?: 'auto' | 'low' | 'high';
+      };
   input_audio?: {
     data: string;
     format?: string;

@@ -1,4 +1,29 @@
-import { isArray, isBoolean, isNumber, isObjectLike, isString } from 'lodash-es';
+import { isBoolean, isNumber, isPlainObject, isString } from 'lodash-es';
+import { z } from 'zod';
+
+const JsonValueSchema = z.json();
+const JsonSchemaMapSchema = z.record(z.string(), JsonValueSchema);
+
+type JsonSchemaValue = z.output<typeof JsonValueSchema>;
+
+export type JsonSchemaMap = z.output<typeof JsonSchemaMapSchema>;
+
+function isJsonSchemaMap(value: JsonSchemaValue): value is JsonSchemaMap {
+  return isPlainObject(value);
+}
+
+function isJsonSchemaPrimitive(value: JsonSchemaValue): value is string | number | boolean {
+  return isString(value) || isNumber(value) || isBoolean(value);
+}
+
+function cloneJsonValue<TValue extends JsonSchemaValue>(value: TValue): TValue {
+  return structuredClone(value);
+}
+
+function cloneJsonSchemaMap(value: JsonSchemaMap): JsonSchemaMap {
+  const clonedValue = cloneJsonValue(value);
+  return isJsonSchemaMap(clonedValue) ? clonedValue : {};
+}
 
 /**
  * Recursively cleans JSON Schema to meet Gemini interface requirements
@@ -15,13 +40,11 @@ import { isArray, isBoolean, isNumber, isObjectLike, isString } from 'lodash-es'
  * `properties` merge key by key and `required` unions, so nothing already present is
  * overwritten by a branch.
  */
-function mergeSchemaInto(target: Record<string, any>, source: Record<string, any>) {
+function mergeSchemaInto(target: JsonSchemaMap, source: JsonSchemaMap) {
   for (const [key, val] of Object.entries(source)) {
-    if (key === 'properties' && isObjectLike(val) && !isArray(val)) {
-      if (!isObjectLike(target.properties) || isArray(target.properties)) {
-        target.properties = {};
-      }
-      const targetProperties = target.properties as Record<string, unknown>;
+    if (key === 'properties' && isJsonSchemaMap(val)) {
+      const targetProperties = isJsonSchemaMap(target.properties) ? target.properties : {};
+      target.properties = targetProperties;
       for (const [propertyName, propertySchema] of Object.entries(val)) {
         if (targetProperties[propertyName] === undefined) {
           targetProperties[propertyName] = propertySchema;
@@ -30,8 +53,8 @@ function mergeSchemaInto(target: Record<string, any>, source: Record<string, any
       continue;
     }
 
-    if (key === 'required' && isArray(val)) {
-      const existing = isArray(target.required) ? (target.required as unknown[]) : [];
+    if (key === 'required' && Array.isArray(val)) {
+      const existing = Array.isArray(target.required) ? target.required : [];
       target.required = Array.from(new Set([...existing, ...val]));
       continue;
     }
@@ -48,46 +71,47 @@ function mergeSchemaInto(target: Record<string, any>, source: Record<string, any
  * schema declared its shape, so the tool arrives with no properties at all. `allOf` merges
  * every branch; `anyOf` and `oneOf` take the first branch that carries a shape.
  */
-function collapseSchemaBranches(map: Record<string, any>) {
+function collapseSchemaBranches(map: JsonSchemaMap) {
   const allOf = map['allOf'];
-  if (isArray(allOf)) {
+  if (Array.isArray(allOf)) {
     for (const branch of allOf) {
-      if (isObjectLike(branch) && !isArray(branch)) {
-        mergeSchemaInto(map, branch as Record<string, any>);
+      if (isJsonSchemaMap(branch)) {
+        mergeSchemaInto(map, branch);
       }
     }
   }
 
   for (const keyword of ['anyOf', 'oneOf']) {
     const branches = map[keyword];
-    if (!isArray(branches)) {
+    if (!Array.isArray(branches)) {
       continue;
     }
     const usable = branches.find(
-      (branch) =>
-        isObjectLike(branch) &&
-        !isArray(branch) &&
-        ((branch as Record<string, unknown>).properties !== undefined ||
-          (branch as Record<string, unknown>).type !== undefined),
+      (branch): branch is JsonSchemaMap =>
+        isJsonSchemaMap(branch) && (branch.properties !== undefined || branch.type !== undefined),
     );
     if (usable) {
-      mergeSchemaInto(map, usable as Record<string, any>);
+      mergeSchemaInto(map, usable);
     }
   }
 }
 
-export function cleanJsonSchema(value: any) {
+export function cleanJsonSchema(value: JsonSchemaMap): void {
   // 0. Preprocessing: Expand $ref (Schema Flattening)
-  if (isObjectLike(value) && !isArray(value)) {
-    const defs: Record<string, any> = {};
+  if (isJsonSchemaMap(value)) {
+    const defs: JsonSchemaMap = {};
 
     // Extract $defs or definitions
     if (value['$defs']) {
-      Object.assign(defs, value['$defs']);
+      if (isJsonSchemaMap(value['$defs'])) {
+        Object.assign(defs, value['$defs']);
+      }
       delete value['$defs'];
     }
     if (value['definitions']) {
-      Object.assign(defs, value['definitions']);
+      if (isJsonSchemaMap(value['definitions'])) {
+        Object.assign(defs, value['definitions']);
+      }
       delete value['definitions'];
     }
 
@@ -101,13 +125,14 @@ export function cleanJsonSchema(value: any) {
   cleanJsonSchemaRecursive(value);
 }
 
-export function normalizeObjectJsonSchema(schema: unknown): Record<string, unknown> {
-  const fallbackSchema: Record<string, unknown> = { type: 'object', properties: {} };
-  if (!isObjectLike(schema) || isArray(schema)) {
+export function normalizeObjectJsonSchema(schema: unknown): JsonSchemaMap {
+  const fallbackSchema: JsonSchemaMap = { type: 'object', properties: {} };
+  const parsedSchema = JsonSchemaMapSchema.safeParse(schema);
+  if (!parsedSchema.success) {
     return fallbackSchema;
   }
 
-  const normalizedSchema = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
+  const normalizedSchema = cloneJsonSchemaMap(parsedSchema.data);
   cleanJsonSchema(normalizedSchema);
 
   if (!isString(normalizedSchema.type)) {
@@ -115,9 +140,7 @@ export function normalizeObjectJsonSchema(schema: unknown): Record<string, unkno
   }
   if (
     normalizedSchema.type === 'object' &&
-    (!normalizedSchema.properties ||
-      !isObjectLike(normalizedSchema.properties) ||
-      isArray(normalizedSchema.properties))
+    (!normalizedSchema.properties || !isJsonSchemaMap(normalizedSchema.properties))
   ) {
     normalizedSchema.properties = {};
   }
@@ -128,12 +151,21 @@ export function normalizeObjectJsonSchema(schema: unknown): Record<string, unkno
 /**
  * Recursively expand $ref
  */
-function flattenRefs(map: any, defs: Record<string, any>) {
-  if (!isObjectLike(map)) return;
+function flattenRefs(value: JsonSchemaValue, defs: JsonSchemaMap): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      flattenRefs(entry, defs);
+    }
+    return;
+  }
+
+  if (!isJsonSchemaMap(value)) {
+    return;
+  }
 
   // Check and replace $ref
-  if (isString(map['$ref'])) {
-    const refPath = map['$ref'];
+  if (isString(value['$ref'])) {
+    const refPath = value['$ref'];
     // Parse reference name (e.g. #/$defs/MyType -> MyType)
     const parts = refPath.split('/');
     const refName = parts[parts.length - 1] || refPath;
@@ -141,189 +173,178 @@ function flattenRefs(map: any, defs: Record<string, any>) {
     if (defs[refName]) {
       const defSchema = defs[refName];
       // $ref nodes should not have other properties, remove $ref directly
-      delete map['$ref'];
+      delete value['$ref'];
 
-      if (isObjectLike(defSchema)) {
-        for (const [k, v] of Object.entries(defSchema)) {
+      if (isJsonSchemaMap(defSchema)) {
+        for (const [key, schemaValue] of Object.entries(defSchema)) {
           // Only insert if the key does not exist in current map (avoid overwrite)
-          if (map[k] === undefined) {
+          if (value[key] === undefined) {
             // Clone deep to avoid reference issues
-            map[k] = JSON.parse(JSON.stringify(v));
+            value[key] = cloneJsonValue(schemaValue);
           }
         }
 
         // Recursively process $refs in the newly merged content
-        flattenRefs(map, defs);
+        flattenRefs(value, defs);
       }
     }
   }
 
   // Recursively process all children
-  for (const k in map) {
-    if (Object.prototype.hasOwnProperty.call(map, k)) {
-      const v = map[k];
-      if (isObjectLike(v)) {
-        flattenRefs(v, defs);
-      }
-    }
+  for (const child of Object.values(value)) {
+    flattenRefs(child, defs);
   }
 }
 
-function cleanJsonSchemaRecursive(value: any) {
-  if (!isObjectLike(value)) {
+function cleanJsonSchemaRecursive(value: JsonSchemaValue): void {
+  if (Array.isArray(value)) {
+    // Array: Recursively process each element
+    for (const entry of value) {
+      cleanJsonSchemaRecursive(entry);
+    }
     return;
   }
 
-  if (isArray(value)) {
-    // Array: Recursively process each element
-    for (const v of value) {
-      cleanJsonSchemaRecursive(v);
-    }
-  } else {
-    const map = value;
+  if (!isJsonSchemaMap(value)) {
+    return;
+  }
 
-    if (isObjectLike(map.properties) && !isArray(map.properties)) {
-      const properties = map.properties as Record<string, unknown>;
-      const droppedKeys = Object.keys(properties).filter(
-        (key) => !isObjectLike(properties[key]) || isArray(properties[key]),
+  const map = value;
+
+  if (isJsonSchemaMap(map.properties)) {
+    const properties = map.properties;
+    const droppedKeys = Object.keys(properties).filter((key) => !isJsonSchemaMap(properties[key]));
+
+    for (const key of droppedKeys) {
+      delete properties[key];
+    }
+
+    const requiredFields = map.required;
+    if (droppedKeys.length > 0 && Array.isArray(requiredFields)) {
+      const remainingRequiredFields = requiredFields.filter(
+        (requiredKey) => !isString(requiredKey) || !droppedKeys.includes(requiredKey),
       );
-
-      for (const key of droppedKeys) {
-        delete properties[key];
-      }
-
-      if (droppedKeys.length > 0 && isArray(map.required)) {
-        map.required = map.required.filter(
-          (requiredKey: unknown) => !isString(requiredKey) || !droppedKeys.includes(requiredKey),
-        );
-        if (map.required.length === 0) {
-          delete map.required;
-        }
-      }
-    }
-
-    if (map.items !== undefined && (!isObjectLike(map.items) || isArray(map.items))) {
-      delete map.items;
-      // 1. Recursively process all children first to ensure nested structures are cleaned
-    }
-    for (const k in map) {
-      if (Object.prototype.hasOwnProperty.call(map, k)) {
-        cleanJsonSchemaRecursive(map[k]);
-      }
-    }
-
-    // 2. Collect and process validation fields (Migration logic: Downgrade constraints to Hints in description)
-    const constraints: string[] = [];
-
-    const enumValues = map.enum;
-    if (enumValues !== undefined) {
-      if (!isArray(enumValues)) {
-        delete map.enum;
+      if (remainingRequiredFields.length === 0) {
+        delete map.required;
       } else {
-        const primitiveEnumValues = enumValues.filter(
-          (enumValue: unknown) =>
-            isString(enumValue) || isNumber(enumValue) || isBoolean(enumValue),
-        );
-        const schemaType = isString(map.type) ? map.type.toLowerCase() : '';
-        const supportsGeminiStringEnum = ['string', 'integer', 'number'].includes(schemaType);
-
-        if (primitiveEnumValues.length === 0) {
-          delete map.enum;
-        } else if (supportsGeminiStringEnum) {
-          map.enum = primitiveEnumValues.map(String);
-        } else if (primitiveEnumValues.every(isString)) {
-          if (primitiveEnumValues.length !== enumValues.length) {
-            map.enum = primitiveEnumValues;
-          }
-        } else {
-          constraints.push(`enum: ${primitiveEnumValues.join(', ')}`);
-          delete map.enum;
-        }
+        map.required = remainingRequiredFields;
       }
     }
+  }
 
-    // Validation fields blacklist for migration
-    const validationFields = [
-      ['pattern', 'pattern'],
-      ['minLength', 'minLen'],
-      ['maxLength', 'maxLen'],
-      ['minimum', 'min'],
-      ['maximum', 'max'],
-      ['minItems', 'minItems'],
-      ['maxItems', 'maxItems'],
-      ['exclusiveMinimum', 'exclMin'],
-      ['exclusiveMaximum', 'exclMax'],
-      ['multipleOf', 'multipleOf'],
-      ['format', 'format'],
-    ];
+  if (map.items !== undefined && !isJsonSchemaMap(map.items)) {
+    delete map.items;
+  }
 
-    for (const [field, label] of validationFields) {
-      if (map[field] !== undefined) {
-        const val = map[field];
-        // Only migrate if value is primitive type
-        if (isString(val) || isNumber(val) || isBoolean(val)) {
-          constraints.push(`${label}: ${val}`);
-          delete map[field];
-        } else {
-          // If not expected type, leave as is (JS pass by reference, just don't delete)
+  // 1. Recursively process all children first to ensure nested structures are cleaned
+  for (const child of Object.values(map)) {
+    cleanJsonSchemaRecursive(child);
+  }
+
+  // 2. Collect and process validation fields (Migration logic: Downgrade constraints to Hints in description)
+  const constraints: string[] = [];
+
+  const enumValues = map.enum;
+  if (enumValues !== undefined) {
+    if (!Array.isArray(enumValues)) {
+      delete map.enum;
+    } else {
+      const primitiveEnumValues = enumValues.filter(isJsonSchemaPrimitive);
+      const schemaType = isString(map.type) ? map.type.toLowerCase() : '';
+      const supportsGeminiStringEnum = ['string', 'integer', 'number'].includes(schemaType);
+
+      if (primitiveEnumValues.length === 0) {
+        delete map.enum;
+      } else if (supportsGeminiStringEnum) {
+        map.enum = primitiveEnumValues.map(String);
+      } else if (primitiveEnumValues.every(isString)) {
+        if (primitiveEnumValues.length !== enumValues.length) {
+          map.enum = primitiveEnumValues;
         }
+      } else {
+        constraints.push(`enum: ${primitiveEnumValues.join(', ')}`);
+        delete map.enum;
       }
     }
+  }
 
-    // 3. Append constraint info to description
-    if (constraints.length > 0) {
-      const suffix = ` [Constraint: ${constraints.join(', ')}]`;
-      map['description'] = (map['description'] || '') + suffix;
-    }
+  // Validation fields blacklist for migration
+  const validationFields = [
+    ['pattern', 'pattern'],
+    ['minLength', 'minLen'],
+    ['maxLength', 'maxLen'],
+    ['minimum', 'min'],
+    ['maximum', 'max'],
+    ['minItems', 'minItems'],
+    ['maxItems', 'maxItems'],
+    ['exclusiveMinimum', 'exclMin'],
+    ['exclusiveMaximum', 'exclMax'],
+    ['multipleOf', 'multipleOf'],
+    ['format', 'format'],
+  ];
 
-    // 4. Keep the declared shape before the blacklist removes the keyword that carried it
-    collapseSchemaBranches(map);
-
-    // 5. Physically remove "hard" blacklist items that interfere with generation
-    const hardRemoveFields = [
-      '$schema',
-      'additionalProperties',
-      'enumCaseInsensitive',
-      'enumNormalizeWhitespace',
-      'uniqueItems',
-      'default',
-      'const',
-      'examples',
-      // Advanced logic fields common in MCP tools but unsupported by Gemini
-      'propertyNames',
-      'anyOf',
-      'oneOf',
-      'allOf',
-      'not',
-      'if',
-      'then',
-      'else',
-      'dependencies',
-      'dependentSchemas',
-      'dependentRequired',
-      'cache_control', // Fixes 400 error triggered by cache_control mentioned by user
-      'tools',
-    ];
-    for (const field of hardRemoveFields) {
+  for (const [field, label] of validationFields) {
+    const validationValue = map[field];
+    // Only migrate if value is primitive type
+    if (isJsonSchemaPrimitive(validationValue)) {
+      constraints.push(`${label}: ${validationValue}`);
       delete map[field];
     }
+  }
 
-    // 5. Handle type field (Gemini requires single lowercase string)
-    if (map['type']) {
-      const typeVal = map['type'];
-      if (isString(typeVal)) {
-        map['type'] = typeVal.toLowerCase();
-      } else if (isArray(typeVal)) {
-        // Union type downgrade: take the first non-null type
-        let selectedType = 'string';
-        for (const item of typeVal) {
-          if (isString(item) && item !== 'null') {
-            selectedType = item.toLowerCase();
-            break;
-          }
+  // 3. Append constraint info to description
+  if (constraints.length > 0) {
+    const suffix = ` [Constraint: ${constraints.join(', ')}]`;
+    map['description'] = String(map['description'] || '') + suffix;
+  }
+
+  // 4. Keep the declared shape before the blacklist removes the keyword that carried it
+  collapseSchemaBranches(map);
+
+  // 5. Physically remove "hard" blacklist items that interfere with generation
+  const hardRemoveFields = [
+    '$schema',
+    'additionalProperties',
+    'enumCaseInsensitive',
+    'enumNormalizeWhitespace',
+    'uniqueItems',
+    'default',
+    'const',
+    'examples',
+    // Advanced logic fields common in MCP tools but unsupported by Gemini
+    'propertyNames',
+    'anyOf',
+    'oneOf',
+    'allOf',
+    'not',
+    'if',
+    'then',
+    'else',
+    'dependencies',
+    'dependentSchemas',
+    'dependentRequired',
+    'cache_control', // Fixes 400 error triggered by user report
+    'tools',
+  ];
+  for (const field of hardRemoveFields) {
+    delete map[field];
+  }
+
+  // 6. Handle type field (Gemini requires single lowercase string)
+  if (map['type']) {
+    const typeValue = map['type'];
+    if (isString(typeValue)) {
+      map['type'] = typeValue.toLowerCase();
+    } else if (Array.isArray(typeValue)) {
+      // Union type downgrade: take the first non-null type
+      let selectedType = 'string';
+      for (const item of typeValue) {
+        if (isString(item) && item !== 'null') {
+          selectedType = item.toLowerCase();
+          break;
         }
-        map['type'] = selectedType;
       }
+      map['type'] = selectedType;
     }
   }
 }

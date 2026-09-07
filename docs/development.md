@@ -23,6 +23,7 @@ npm run check:governance
 npm run change-scope -- --base origin/main --head HEAD
 npm run analyze:imports
 npm run verify:boundaries
+npm run verify:type-boundaries
 npm test
 npm run test:e2e
 npm run package
@@ -37,7 +38,8 @@ npm run make
 - `npm run change-scope` prints a versioned, read-only Git change report. Pass explicit `--base` and `--head` revisions when comparing commits; it never fetches or changes Git state.
 - `npm run analyze:imports` prints the Git-tracked TypeScript/JavaScript import graph. Runtime closure ignores type-only imports.
 - `npm run verify:boundaries` reports renderer, preload, shared and root-IPC boundary violations without failing the command. `npm run verify:root-ipc-boundary` enforces the clean root-router rule today; `npm run verify:boundaries:enforce` is reserved for a clean overall baseline and exits non-zero on any violation.
-- `npm run check:governance` runs governance contracts, harness-script tests and the current boundary report. CI runs it before static and unit checks.
+- `npm run verify:type-boundaries` compares production type-boundary violations with the checked-in baseline. Regenerate that baseline only as an explicit, reviewed policy update with `node scripts/verify-type-boundaries.mjs --write-baseline`.
+- `npm run check:governance` runs governance contracts, harness-script tests, runtime boundaries and the type-boundary baseline gate. CI runs it before static and unit checks.
 
 Run one unit test with:
 
@@ -72,6 +74,15 @@ Use [testing.md](testing.md) to select checks according to the affected behavior
 Development logs from Electron main and the embedded NestJS gateway appear in the main-process console. Renderer logs and React diagnostics appear in Chromium DevTools. `Shift + Click` can jump from a rendered element to source when `code-inspector-plugin` is enabled.
 
 Sentry is enabled only when the relevant build configuration and credentials are present. Absence of Sentry in a local build is not evidence that the instrumentation path is broken.
+
+React Scan is opt-in and development-only. Enable it for one local Electron session with:
+
+```powershell
+$env:ANTIGRAVITY_ENABLE_REACT_SCAN = '1'
+npm start
+```
+
+Vite injects the diagnostic before the renderer entry only in that mode; production builds and CI do not reference it. When enabled, the current React Scan package performs its own version check against `react-grab.com`, so do not enable it in a development environment where that outbound request is prohibited.
 
 Performance recording and local update-feed helpers live in `scripts/` and have dedicated npm commands. Use them only when the task concerns those paths; some operations create local artifacts or require platform-specific binaries.
 

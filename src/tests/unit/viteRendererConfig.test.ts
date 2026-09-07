@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { PluginOption, UserConfig } from 'vite';
 
+const REACT_SCAN_ENABLED_ENV = 'ANTIGRAVITY_ENABLE_REACT_SCAN';
+
 async function loadRendererConfig() {
   // @ts-expect-error Vitest can load the root .mts config directly, while the app tsconfig emits declarations.
   return (await import('../../../vite.renderer.config.mts')).default;
@@ -37,6 +39,25 @@ function flattenPluginNames(plugins: PluginOption[] = []): string[] {
   });
 }
 
+async function withEnvironment<T>(
+  key: string,
+  value: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const previous = process.env[key];
+  process.env[key] = value;
+
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = previous;
+    }
+  }
+}
+
 describe('renderer Vite config', () => {
   it('keeps code inspector out of production builds', async () => {
     const config = await resolveRendererConfig('production');
@@ -48,6 +69,22 @@ describe('renderer Vite config', () => {
     const config = await resolveRendererConfig('development');
 
     expect(flattenPluginNames(config.plugins)).toContain('@code-inspector/vite');
+  }, 15000);
+
+  it('injects React Scan only for an explicitly enabled development session', async () => {
+    await withEnvironment(REACT_SCAN_ENABLED_ENV, '1', async () => {
+      const config = await resolveRendererConfig('development');
+
+      expect(flattenPluginNames(config.plugins)).toContain('antigravity-react-scan');
+    });
+  }, 15000);
+
+  it('keeps React Scan out of production even when the development switch is set', async () => {
+    await withEnvironment(REACT_SCAN_ENABLED_ENV, '1', async () => {
+      const config = await resolveRendererConfig('production');
+
+      expect(flattenPluginNames(config.plugins)).not.toContain('antigravity-react-scan');
+    });
   }, 15000);
 
   it('defines NODE_ENV for renderer code without requiring Node integration', async () => {

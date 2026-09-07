@@ -4,7 +4,6 @@ import type { MessageBoxOptions } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import squirrelStartup from 'electron-squirrel-startup';
-import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
 import { ipcMain } from 'electron/main';
 import { ipcContext } from '@/ipc/context';
@@ -51,6 +50,7 @@ import { selectWindowsUpdateResult } from '@/modules/app-shell/update/windowsUpd
 import { getQuickObservabilityConfig } from '@/shared/observability/observabilityConfig';
 import { registerPerformanceRecorderIpc } from '@/modules/app-shell/performance-recorder/ipc';
 import { configurePerformanceRecorderCommandLine } from '@/modules/app-shell/performance-recorder/main-recorder';
+import { waitForViteDevServer } from '@/modules/app-shell/utils/wait-for-vite-dev-server';
 
 // Turn on rotating file output as early as possible, before any module-level
 // logging below runs, so the shipped app keeps logging to disk as before.
@@ -59,7 +59,7 @@ logger.enableFileLogging();
 
 const packetLogPath = path.join(app.getPath('userData'), 'orpc_packets.log');
 
-function logPacket(data: any) {
+function logPacket(data: unknown) {
   try {
     fs.appendFileSync(
       packetLogPath,
@@ -101,15 +101,8 @@ const debugProxyBypassList =
 
 function configureDebugProxy() {
   if (debugHttpProxy || debugHttpsProxy) {
-    setGlobalDispatcher(
-      new EnvHttpProxyAgent({
-        httpProxy: debugHttpProxy,
-        httpsProxy: debugHttpsProxy,
-        noProxy: debugNoProxy,
-      }),
-    );
     logger.info(
-      `[Debug Proxy] Node fetch proxy enabled (http: ${debugHttpProxy ?? 'none'}, https: ${debugHttpsProxy ?? 'none'}, no_proxy: ${debugNoProxy ?? 'none'})`,
+      `[Debug Proxy] Axios will use HTTP(S) proxy environment settings (http: ${debugHttpProxy ?? 'none'}, https: ${debugHttpsProxy ?? 'none'}, no_proxy: ${debugNoProxy ?? 'none'})`,
     );
   }
 
@@ -420,34 +413,18 @@ function createWindow({ startHidden }: { startHidden: boolean }) {
     const devUrl = MAIN_WINDOW_VITE_DEV_SERVER_URL;
     logger.info(`createWindow: waiting for Vite dev server at ${devUrl}`);
 
-    // Wait for Vite to be ready before loading
-    const waitForVite = async (url: string, maxRetries = 30, delay = 500) => {
-      for (let i = 0; i < maxRetries; i++) {
-        try {
-          const response = await fetch(url);
-          if (response.ok) {
-            logger.info(`createWindow: Vite server ready after ${i * delay}ms`);
-            return true;
-          }
-        } catch {
-          // Server not ready yet
-        }
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-      logger.error('createWindow: Vite server did not start in time');
-      return false;
-    };
-
-    waitForVite(devUrl).then((ready) => {
+    waitForViteDevServer(devUrl).then((readyAfterMs) => {
       if (mainWindow.isDestroyed()) {
         logger.warn('createWindow: BrowserWindow destroyed before Vite URL load');
         return;
       }
 
-      if (ready) {
+      if (readyAfterMs !== null) {
+        logger.info(`createWindow: Vite server ready after ${readyAfterMs}ms`);
         logger.info(`createWindow: loading URL ${devUrl}`);
         mainWindow.loadURL(devUrl);
       } else {
+        logger.error('createWindow: Vite server did not start in time');
         logger.error('createWindow: Failed to connect to Vite server, loading anyway');
         mainWindow.loadURL(devUrl);
       }

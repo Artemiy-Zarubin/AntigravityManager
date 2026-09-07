@@ -1,0 +1,32 @@
+name: React Doctor
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: react-doctor-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  react-doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REACT_DOCTOR_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Analyze changed React code
+        uses: millionco/react-doctor@v2
+        with:
+          blocking: error
+          scope: lines

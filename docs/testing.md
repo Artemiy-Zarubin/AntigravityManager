@@ -29,6 +29,12 @@ Select evidence according to the behavior a change can affect. Focused tests are
 
 `npm run check:governance` analyzes the current worktree, including untracked source files and unstaged deletions, and enforces every runtime boundary rule. It is not a report-only check.
 
+## Type and React quality gates
+
+`npm run verify:type-boundaries` blocks new production `any`, double assertions, native `fetch`, direct JSON assertions and `@ts-ignore` entries against `.agents/type-boundary-baseline.json`. Test, mock and generated sources are excluded. A controlled third-party adapter exception must be local, time-bounded and name its owner, tracking issue and reason.
+
+React Doctor runs in pull requests with changed-line scope and error blocking. Telemetry, score sharing and supply-chain analysis are disabled. A full scan is advisory and establishes the existing-work baseline. React Scan is injected only for an explicitly enabled development Electron session; it is not bundled or run in CI.
+
 ## Focused commands
 
 Run a specific Vitest file:

@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
@@ -11,11 +11,40 @@ import {
 } from './src/shared/analytics/clarityConfig';
 
 const clarityBuildEnvKeys = ['CLARITY_PROJECT_ID', 'NODE_ENV'] as const;
+const REACT_SCAN_ENABLED_ENV = 'ANTIGRAVITY_ENABLE_REACT_SCAN';
+const REACT_SCAN_ENTRY = '/src/modules/app-shell/diagnostics/react-scan.ts';
+
+/**
+ * React Scan has to be an independently injected development entry. Importing
+ * it from the renderer would make the diagnostic available to every build
+ * before a runtime condition could exclude the production bundle.
+ */
+function createReactScanPlugin(): Plugin {
+  return {
+    name: 'antigravity-react-scan',
+    transformIndexHtml: {
+      order: 'pre',
+      handler: () => [
+        {
+          tag: 'script',
+          attrs: {
+            type: 'module',
+            src: REACT_SCAN_ENTRY,
+          },
+          injectTo: 'body-prepend',
+        },
+      ],
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const sentryAuthToken = process.env.SENTRY_AUTH_TOKEN || env.SENTRY_AUTH_TOKEN;
   const shouldEnableSentry = mode === 'production' && Boolean(sentryAuthToken);
+  const shouldEnableReactScan =
+    mode === 'development' &&
+    (process.env[REACT_SCAN_ENABLED_ENV] ?? env[REACT_SCAN_ENABLED_ENV]) === '1';
   const clarityBuildEnv = Object.fromEntries(
     clarityBuildEnvKeys.map((key) => [key, process.env[key] || env[key] || '']),
   ) as ClarityBuildEnv;
@@ -50,6 +79,7 @@ export default defineConfig(({ mode }) => {
       }),
       tailwindcss(),
       ...(mode === 'production' ? [] : [codeInspectorPlugin({ bundler: 'vite' })]),
+      ...(shouldEnableReactScan ? [createReactScanPlugin()] : []),
       react({
         babel: {
           plugins: ['babel-plugin-react-compiler'],

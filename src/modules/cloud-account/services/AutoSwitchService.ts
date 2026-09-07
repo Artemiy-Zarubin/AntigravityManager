@@ -1,7 +1,12 @@
 import { Notification } from 'electron';
+import { z } from 'zod';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
 import { CloudAccountSettingsStore } from '@/modules/cloud-account/persistence/cloud-account-settings-store';
-import { CloudAccount } from '@/modules/cloud-account/types';
+import {
+  AutoSwitchModelsConfigSchema,
+  type AutoSwitchModelConfig,
+  type CloudAccount,
+} from '@/modules/cloud-account/types';
 import { switchCloudAccount } from '@/modules/cloud-account/ipc/handler';
 import { logger } from '@/shared/logging/logger';
 import type { AntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
@@ -10,6 +15,8 @@ interface AccountSelectionScore {
   priorityScore: number | null;
   fallbackScore: number;
 }
+
+const BooleanSettingSchema = z.boolean();
 
 export class AutoSwitchService {
   /**
@@ -23,9 +30,10 @@ export class AutoSwitchService {
   static async findBestAccount(currentAccountId: string): Promise<CloudAccount | null> {
     const accounts = await CloudAccountRepo.getAccounts();
     const config =
-      CloudAccountSettingsStore.getSetting<Record<string, { enabled: boolean; priority: boolean }>>(
+      CloudAccountSettingsStore.getSetting(
         'auto_switch_models',
         {},
+        AutoSwitchModelsConfigSchema,
       ) || {};
 
     // Filter potential candidates
@@ -58,17 +66,14 @@ export class AutoSwitchService {
     return candidates[0];
   }
 
-  private static getModelConfig(
-    config: Record<string, { enabled: boolean; priority: boolean }>,
-    modelId: string,
-  ) {
+  private static getModelConfig(config: Record<string, AutoSwitchModelConfig>, modelId: string) {
     const normalizedModelId = modelId.replace(/^models\//i, '');
     return config[modelId] ?? config[normalizedModelId];
   }
 
   private static calculateAccountScore(
     account: CloudAccount,
-    config: Record<string, { enabled: boolean; priority: boolean }>,
+    config: Record<string, AutoSwitchModelConfig>,
   ): AccountSelectionScore {
     if (!account.quota?.models) {
       return { priorityScore: null, fallbackScore: 0 };
@@ -108,7 +113,11 @@ export class AutoSwitchService {
   static async checkAndSwitchIfNeeded(
     appTarget?: AntigravityAppTarget | undefined,
   ): Promise<boolean> {
-    const enabled = CloudAccountSettingsStore.getSetting<boolean>('auto_switch_enabled', false);
+    const enabled = CloudAccountSettingsStore.getSetting(
+      'auto_switch_enabled',
+      false,
+      BooleanSettingSchema,
+    );
     if (!enabled) return false;
 
     // Get current active account for the target
@@ -168,9 +177,10 @@ export class AutoSwitchService {
     const THRESHOLD = 5;
 
     const config =
-      CloudAccountSettingsStore.getSetting<Record<string, { enabled: boolean; priority: boolean }>>(
+      CloudAccountSettingsStore.getSetting(
         'auto_switch_models',
         {},
+        AutoSwitchModelsConfigSchema,
       ) || {};
 
     const enabledModels = Object.entries(account.quota.models).filter(([modelId]) => {

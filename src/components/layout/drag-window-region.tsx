@@ -14,14 +14,15 @@ export default function DragWindowRegion({ title }: DragWindowRegionProps) {
     let active = true;
 
     getPlatform()
-      .then((value: any) => {
+      .then((value) => {
         if (!active) {
           return;
         }
-        setPlatform(value as string);
+        setPlatform(value);
       })
-      .catch((error: any) => {
-        logger.error('Failed to detect platform', error);
+      .catch((error: unknown) => {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        logger.error('Failed to detect platform', failure);
       });
 
     return () => {

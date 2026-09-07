@@ -1,7 +1,7 @@
 import { app, Tray, Menu, nativeImage, BrowserWindow } from 'electron';
 import { CloudAccount } from '@/modules/cloud-account/types';
 import { logger } from '@/shared/logging/logger';
-import { getTrayTexts } from './i18n';
+import { getTrayTexts, type TrayTexts } from './i18n';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
 import { GoogleAPIService } from '@/modules/cloud-account/services/GoogleAPIService';
 import { configureTrayIcon, resolveTrayIconPath } from './icon';
@@ -12,7 +12,7 @@ let lastAccount: CloudAccount | null = null;
 let lastLanguage: string = 'en';
 let onQuitRequested: (() => void | Promise<void>) | null = null;
 
-function getQuotaText(account: CloudAccount | null, texts: any): string[] {
+function getQuotaText(account: CloudAccount | null, texts: TrayTexts): string[] {
   if (!account) return [`${texts.quota}: --`];
   if (!account.quota || !account.quota.models) return [`${texts.quota}: ${texts.unknown_quota}`];
 

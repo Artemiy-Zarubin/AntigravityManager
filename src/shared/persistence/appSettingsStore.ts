@@ -1,11 +1,14 @@
 import fs from 'fs';
 import path from 'path';
+import { z } from 'zod';
 import { getAgentDir } from '@/shared/platform/paths';
 import { logger } from '@/shared/logging/logger';
 
 const APP_SETTINGS_FILENAME = 'manager_app_settings.json';
 
-type AppSettings = Record<string, unknown>;
+const AppSettingsSchema = z.record(z.string(), z.unknown());
+
+type AppSettings = z.infer<typeof AppSettingsSchema>;
 
 function getAppSettingsPath(): string {
   const appSettingsDir = getAgentDir();
@@ -24,9 +27,9 @@ function readAppSettings(): AppSettings {
 
   try {
     const content = fs.readFileSync(settingsPath, 'utf-8');
-    const parsed = JSON.parse(content);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as AppSettings;
+    const parsed = AppSettingsSchema.safeParse(JSON.parse(content));
+    if (parsed.success) {
+      return parsed.data;
     }
   } catch (error) {
     logger.error('AppSettings: Failed to read app settings', error);
@@ -44,13 +47,18 @@ function writeAppSettings(settings: AppSettings): void {
   }
 }
 
-export function getAppSetting<T>(key: string, fallback: T): T {
+export function getAppSetting<TSchema extends z.ZodType>(
+  key: string,
+  schema: TSchema,
+  fallback: z.output<TSchema>,
+): z.output<TSchema> {
   const settings = readAppSettings();
   if (!(key in settings)) {
     return fallback;
   }
 
-  return settings[key] as T;
+  const parsed = schema.safeParse(settings[key]);
+  return parsed.success ? parsed.data : fallback;
 }
 
 export function setAppSetting(key: string, value: unknown): void {

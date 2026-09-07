@@ -16,7 +16,8 @@ export interface WriteJsonFileAtomicOptions {
  */
 export function readJsonFileSync(filePath: string): unknown {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    return parsed;
   } catch {
     return null;
   }

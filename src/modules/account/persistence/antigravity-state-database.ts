@@ -13,6 +13,7 @@ import { ProtobufUtils } from '@/shared/serialization/protobuf';
 import { openDrizzleConnection } from '@/shared/persistence/database/dbConnection';
 import { itemTable } from '@/shared/persistence/database/schema';
 import type { CredentialStoreTokenInput } from '@/shared/auth/credentialStoreToken';
+import { hasErrorCode } from '@/shared/errors/error-guards';
 
 const KEYS_TO_BACKUP: ItemTableKey[] = [
   'antigravityAuthStatus',
@@ -105,9 +106,8 @@ export function getDatabaseConnection(
 
   try {
     return openAntigravityStateDb(targetPath);
-  } catch (error: unknown) {
-    const err = error as { code?: string };
-    if (err.code === 'SQLITE_BUSY' || err.code === 'SQLITE_LOCKED') {
+  } catch (error) {
+    if (hasErrorCode(error, 'SQLITE_BUSY') || hasErrorCode(error, 'SQLITE_LOCKED')) {
       throw new Error('Database is locked. Please close Antigravity before proceeding.');
     }
     throw error;

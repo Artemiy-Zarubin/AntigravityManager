@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { compare, coerce, parse } from 'semver';
+import { z } from 'zod';
 import { getAntigravityExecutablePath, isWsl } from '@/shared/platform/paths';
 import type { AntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
 import { resolveAntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
@@ -13,6 +14,9 @@ export interface AntigravityVersion {
 
 const cachedVersions = new Map<AntigravityAppTarget, AntigravityVersion>();
 const cachedErrors = new Map<AntigravityAppTarget, Error>();
+const PackageJsonVersionSchema = z.object({
+  version: z.string().optional(),
+});
 
 function cacheAndReturn(
   target: AntigravityAppTarget,
@@ -30,8 +34,12 @@ function readPackageJsonVersion(execPath: string): AntigravityVersion | null {
   }
   try {
     const content = fs.readFileSync(packageJson, 'utf-8');
-    const json = JSON.parse(content) as { version?: string };
-    const parsed = parseVersionString(json.version || null);
+    const rawManifest: unknown = JSON.parse(content);
+    const manifest = PackageJsonVersionSchema.safeParse(rawManifest);
+    if (!manifest.success) {
+      return null;
+    }
+    const parsed = parseVersionString(manifest.data.version ?? null);
     return {
       shortVersion: parsed,
       bundleVersion: parsed,

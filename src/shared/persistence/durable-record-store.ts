@@ -28,6 +28,11 @@ interface DurableRecordFile<TValue> {
   entries: Array<DurableRecord<TValue>>;
 }
 
+interface DurableRecordFileEnvelope {
+  version: number;
+  entries: unknown[];
+}
+
 /**
  * Keyed JSON state that outlives the process.
  *
@@ -148,10 +153,8 @@ export class DurableRecordStore<TValue> {
       return;
     }
 
-    const parsed = readJsonFileSync(this.options.filePath) as Partial<
-      DurableRecordFile<unknown>
-    > | null;
-    if (!parsed || parsed.version !== STORE_FORMAT_VERSION || !Array.isArray(parsed.entries)) {
+    const parsed = readJsonFileSync(this.options.filePath);
+    if (!isDurableRecordFileEnvelope(parsed) || parsed.version !== STORE_FORMAT_VERSION) {
       return;
     }
 
@@ -227,4 +230,15 @@ export class DurableRecordStore<TValue> {
       }
     });
   }
+}
+
+function isDurableRecordFileEnvelope(value: unknown): value is DurableRecordFileEnvelope {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  return (
+    typeof Reflect.get(value, 'version') === 'number' &&
+    Array.isArray(Reflect.get(value, 'entries'))
+  );
 }

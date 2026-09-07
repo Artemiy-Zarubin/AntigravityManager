@@ -388,6 +388,43 @@ describe('Path Utilities', () => {
     expect(paths.getAntigravityExecutablePath('ide')).toBe(idePath);
   });
 
+  it('should accept nullable executable fields persisted by the manager config', async () => {
+    vi.resetModules();
+    setPlatform('win32');
+    process.env.APPDATA = 'C:\\Users\\Alice\\AppData\\Roaming';
+
+    const classicPath = 'D:\\Apps\\Antigravity\\Antigravity.exe';
+    const idePath = 'D:\\Apps\\Antigravity IDE\\Antigravity IDE.exe';
+    const managerConfigPath = p.join(os.homedir(), '.antigravity-agent', 'gui_config.json');
+    let serializedConfig = JSON.stringify({
+      antigravity_executable: classicPath,
+      antigravity_ide_executable: null,
+    });
+
+    vi.spyOn(fs, 'existsSync').mockImplementation((candidatePath) => {
+      const normalizedPath = String(candidatePath);
+      return (
+        normalizedPath === managerConfigPath ||
+        normalizedPath === classicPath ||
+        normalizedPath === idePath
+      );
+    });
+    vi.spyOn(fs, 'readFileSync').mockImplementation((candidatePath) => {
+      return String(candidatePath) === managerConfigPath ? serializedConfig : '';
+    });
+
+    const paths = await import('../../shared/platform/paths');
+
+    expect(paths.getAntigravityExecutablePath()).toBe(classicPath);
+
+    serializedConfig = JSON.stringify({
+      antigravity_executable: null,
+      antigravity_ide_executable: idePath,
+    });
+
+    expect(paths.getAntigravityExecutablePath('ide')).toBe(idePath);
+  });
+
   it('should read executable configuration from the manager config directory first', async () => {
     vi.resetModules();
     setPlatform('win32');
@@ -421,6 +458,39 @@ describe('Path Utilities', () => {
     const paths = await import('../../shared/platform/paths');
 
     expect(paths.getAntigravityExecutablePath('ide')).toBe(managerIdePath);
+  });
+
+  it('should ignore an invalid manager config and fall back to the legacy config', async () => {
+    vi.resetModules();
+    setPlatform('win32');
+    process.env.APPDATA = 'C:\\Users\\Alice\\AppData\\Roaming';
+
+    const legacyClassicPath = 'D:\\Legacy\\Antigravity\\Antigravity.exe';
+    const legacyConfigPath = p.join(process.env.APPDATA, 'Antigravity', 'gui_config.json');
+    const managerConfigPath = p.join(os.homedir(), '.antigravity-agent', 'gui_config.json');
+
+    vi.spyOn(fs, 'existsSync').mockImplementation((candidatePath) => {
+      const normalizedPath = String(candidatePath);
+      return (
+        normalizedPath === legacyConfigPath ||
+        normalizedPath === managerConfigPath ||
+        normalizedPath === legacyClassicPath
+      );
+    });
+    vi.spyOn(fs, 'readFileSync').mockImplementation((candidatePath) => {
+      if (String(candidatePath) === managerConfigPath) {
+        return JSON.stringify({ antigravity_executable: [legacyClassicPath] });
+      }
+      if (String(candidatePath) === legacyConfigPath) {
+        return JSON.stringify({ antigravity_executable: legacyClassicPath });
+      }
+
+      return '';
+    });
+
+    const paths = await import('../../shared/platform/paths');
+
+    expect(paths.getAntigravityExecutablePath()).toBe(legacyClassicPath);
   });
 
   it('should strictly protect configured IDE executable from Classic matching', async () => {

@@ -6,6 +6,8 @@ import {
   CloudAccountHealthSchema,
   CloudQuotaDataSchema,
   CloudTokenDataSchema,
+  type CloudQuotaData,
+  type CloudTokenData,
 } from '@/modules/cloud-account/types';
 import {
   decryptWithMigration,
@@ -548,7 +550,7 @@ export class CloudAccountRepo {
     }
   }
 
-  static async updateToken(id: string, token: any): Promise<void> {
+  static async updateToken(id: string, token: CloudTokenData): Promise<void> {
     // Validate token data before encryption
     CloudTokenDataSchema.parse(token);
 
@@ -569,7 +571,7 @@ export class CloudAccountRepo {
     }
   }
 
-  static async updateQuota(id: string, quota: any): Promise<void> {
+  static async updateQuota(id: string, quota: CloudQuotaData): Promise<void> {
     // Validate quota data before encryption
     CloudQuotaDataSchema.parse(quota);
 

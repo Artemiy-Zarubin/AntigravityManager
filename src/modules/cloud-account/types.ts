@@ -100,6 +100,15 @@ export interface CloudAccount {
   proxy_url?: string;
 }
 
+export const AutoSwitchModelConfigSchema = z.object({
+  enabled: z.boolean(),
+  priority: z.boolean(),
+});
+
+export const AutoSwitchModelsConfigSchema = z.record(z.string(), AutoSwitchModelConfigSchema);
+
+export type AutoSwitchModelConfig = z.infer<typeof AutoSwitchModelConfigSchema>;
+
 // Zod Schemas
 export const CloudTokenDataSchema = z.object({
   access_token: z.string(),

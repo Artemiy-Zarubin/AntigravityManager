@@ -385,4 +385,17 @@ describe('antigravityVersion', () => {
       'Unable to determine Antigravity version',
     );
   });
+
+  it('rejects package fallback manifests whose version is not a string', async () => {
+    const { module } = await importVersionModule({
+      platform: 'linux',
+      execSync: vi.fn(() => {
+        throw new Error('cli fail');
+      }),
+      existsSync: vi.fn(() => true),
+      readFileSync: vi.fn(() => JSON.stringify({ version: 2 })),
+    });
+
+    expect(() => module.getAntigravityVersion()).toThrow('Unable to determine Antigravity version');
+  });
 });

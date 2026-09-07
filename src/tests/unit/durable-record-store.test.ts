@@ -94,6 +94,15 @@ describe('DurableRecordStore', () => {
     expect(() => store.set('beta', { note: 'second' })).not.toThrow();
   });
 
+  it.each(['null', '[]', '"not a record file"'])(
+    'ignores a non-record JSON root: %s',
+    (serialized) => {
+      fs.writeFileSync(filePath, serialized, 'utf-8');
+
+      expect(createStore().get('alpha')).toBeNull();
+    },
+  );
+
   it('drops only the damaged records of an otherwise readable file', () => {
     fs.writeFileSync(
       filePath,

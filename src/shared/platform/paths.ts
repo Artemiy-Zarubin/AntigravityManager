@@ -3,10 +3,20 @@ import os from 'os';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import findProcess, { type ProcessInfo } from 'find-process';
+import { z } from 'zod';
 import type { AntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
 import { resolveAntigravityAppTarget } from '@/shared/platform/antigravityAppTarget';
 
 type PathApi = Pick<typeof path, 'dirname' | 'join' | 'normalize' | 'resolve'>;
+
+const AntigravityManagerConfigSchema = z.object({
+  antigravity_executable: z.string().nullable().optional(),
+  antigravity_ide_executable: z.string().nullable().optional(),
+  antigravity_args: z.array(z.string()).optional(),
+  antigravity_ide_args: z.array(z.string()).optional(),
+});
+
+type AntigravityManagerConfig = z.infer<typeof AntigravityManagerConfigSchema>;
 
 export interface PathResolutionOptions {
   platform?: NodeJS.Platform;
@@ -204,23 +214,18 @@ export function isTargetAntigravityProcessCandidate(
   );
   const strictConfiguredIdePath = getConfiguredAntigravityExecutablePath('ide', true, options);
   const commandExecutablePath = parseCommandLineArguments(processItem.commandLine)[0] || '';
+  const processExecutablePath = processItem.executablePath ?? '';
   const executableIdentity = `${processItem.executablePath || ''} ${commandExecutablePath}`;
   const hasAntigravityProcessIdentity =
     nameLower.includes('antigravity') || executableIdentity.toLowerCase().includes('antigravity');
   const matchesClassicPath =
-    Boolean((configuredClassicPath && processItem.executablePath) || '') &&
-    areExecutablePathsEquivalent(
-      configuredClassicPath as string,
-      processItem.executablePath || '',
-      options,
-    );
+    configuredClassicPath !== null &&
+    processExecutablePath !== '' &&
+    areExecutablePathsEquivalent(configuredClassicPath, processExecutablePath, options);
   const matchesIdePath =
-    Boolean((configuredIdePath && processItem.executablePath) || '') &&
-    areExecutablePathsEquivalent(
-      configuredIdePath as string,
-      processItem.executablePath || '',
-      options,
-    );
+    configuredIdePath !== null &&
+    processExecutablePath !== '' &&
+    areExecutablePathsEquivalent(configuredIdePath, processExecutablePath, options);
   const isIde =
     hasAntigravityIdeMarker(nameLower) ||
     hasAntigravityIdeMarker(executableIdentity) ||
@@ -272,11 +277,11 @@ export function isConfiguredTargetExecutableProcessCandidate(
   const configuredClassicPath = getConfiguredAntigravityExecutablePath('classic', true, options);
   const configuredIdePath = getConfiguredAntigravityExecutablePath('ide', true, options);
   const matchesClassicPath =
-    Boolean(configuredClassicPath) &&
-    areExecutablePathsEquivalent(configuredClassicPath as string, executablePath, options);
+    configuredClassicPath !== null &&
+    areExecutablePathsEquivalent(configuredClassicPath, executablePath, options);
   const matchesIdePath =
-    Boolean(configuredIdePath) &&
-    areExecutablePathsEquivalent(configuredIdePath as string, executablePath, options);
+    configuredIdePath !== null &&
+    areExecutablePathsEquivalent(configuredIdePath, executablePath, options);
 
   if (normalizedTarget === 'ide') {
     return matchesIdePath && !matchesClassicPath;
@@ -394,12 +399,9 @@ function resolveExecutablePathFromProcessInfo(
   return executableCandidate;
 }
 
-function readAntigravityManagerConfig(options?: PathResolutionOptions): {
-  antigravity_executable?: unknown;
-  antigravity_ide_executable?: unknown;
-  antigravity_args?: unknown;
-  antigravity_ide_args?: unknown;
-} | null {
+function readAntigravityManagerConfig(
+  options?: PathResolutionOptions,
+): AntigravityManagerConfig | null {
   const pathApi = getCurrentPlatformPathApi(options);
   const configPaths = [
     pathApi.join(getAgentDir(options), CONFIG_FILENAME),
@@ -412,12 +414,11 @@ function readAntigravityManagerConfig(options?: PathResolutionOptions): {
         continue;
       }
 
-      return JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
-        antigravity_executable?: unknown;
-        antigravity_ide_executable?: unknown;
-        antigravity_args?: unknown;
-        antigravity_ide_args?: unknown;
-      };
+      const rawConfig: unknown = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const parsedConfig = AntigravityManagerConfigSchema.safeParse(rawConfig);
+      if (parsedConfig.success) {
+        return parsedConfig.data;
+      }
     } catch {
       continue;
     }
@@ -604,11 +605,7 @@ export function getConfiguredAntigravityArgs(
     resolveAntigravityAppTarget(target) === 'ide' ? 'antigravity_ide_args' : 'antigravity_args';
   const configuredArgs = rawConfig?.[configKey];
 
-  if (!Array.isArray(configuredArgs)) {
-    return [];
-  }
-
-  return configuredArgs.filter((arg): arg is string => typeof arg === 'string');
+  return configuredArgs ?? [];
 }
 
 function getConfiguredAntigravityExecutablePath(
@@ -623,11 +620,7 @@ function getConfiguredAntigravityExecutablePath(
       : 'antigravity_executable';
   const configuredPath = rawConfig?.[configKey];
 
-  if (typeof configuredPath !== 'string') {
-    return null;
-  }
-
-  const executablePath = configuredPath.trim();
+  const executablePath = configuredPath?.trim();
   if (!executablePath) {
     return null;
   }

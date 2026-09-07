@@ -88,4 +88,22 @@ describe('AppError', () => {
       },
     });
   });
+
+  it('keeps only schema-approved local-import error data at the public IPC boundary', () => {
+    const error = new ORPCError('BAD_REQUEST', {
+      data: {
+        localAccountImportErrorCode: 'session-expired',
+        untrustedData: 'must-not-reach-renderer',
+      },
+      message: 'The local account import session has expired.',
+    });
+
+    const publicError = toPublicORPCError(error, '["cloud","localImport","confirm"]');
+
+    expect(publicError.data).toMatchObject({
+      localAccountImportErrorCode: 'session-expired',
+      requestPath: '["cloud","localImport","confirm"]',
+    });
+    expect(publicError.data).not.toHaveProperty('untrustedData');
+  });
 });

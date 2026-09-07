@@ -1,4 +1,5 @@
 import { Notification } from 'electron';
+import { z } from 'zod';
 import { CloudAccountRepo } from '@/modules/cloud-account/persistence/cloudHandler';
 import { CloudAccountSettingsStore } from '@/modules/cloud-account/persistence/cloud-account-settings-store';
 import { GoogleAPIService, type QuotaData, type TokenResponse } from './GoogleAPIService';
@@ -72,6 +73,9 @@ const CLOUD_MONITOR_NOTIFICATION_TEXT: Record<
 const AUTO_SWITCH_TARGETS: AntigravityAppTarget[] = AntigravityAppTargetSchema.options.filter(
   (target) => target !== 'agy',
 );
+const BooleanSettingSchema = z.boolean();
+const NumberSettingSchema = z.number();
+const StringSettingSchema = z.string();
 
 async function persistMonitorAccountStatusFromError(
   accountId: string,
@@ -158,7 +162,7 @@ export class CloudMonitorService {
   private static stopEpoch = 0;
 
   private static isAutoSwitchEnabled(): boolean {
-    return CloudAccountSettingsStore.getSetting<boolean>('auto_switch_enabled', false);
+    return CloudAccountSettingsStore.getSetting('auto_switch_enabled', false, BooleanSettingSchema);
   }
 
   static configureWeeklyWarmupExecutor(executor: WeeklyWarmupExecutor): void {
@@ -454,16 +458,18 @@ export class CloudMonitorService {
     }
 
     // 4. Check for Quota Alerts
-    const alertEnabled = CloudAccountSettingsStore.getSetting<boolean>(
+    const alertEnabled = CloudAccountSettingsStore.getSetting(
       'quota_alert_enabled',
       false,
+      BooleanSettingSchema,
     );
-    const alertThreshold = CloudAccountSettingsStore.getSetting<number>(
+    const alertThreshold = CloudAccountSettingsStore.getSetting(
       'quota_alert_threshold',
       20,
+      NumberSettingSchema,
     );
     const notificationLanguage = getCloudMonitorLanguage(
-      CloudAccountSettingsStore.getSetting<string>('language', 'en'),
+      CloudAccountSettingsStore.getSetting('language', 'en', StringSettingSchema),
     );
     const notificationText = CLOUD_MONITOR_NOTIFICATION_TEXT[notificationLanguage];
 
@@ -487,13 +493,15 @@ export class CloudMonitorService {
     }
 
     // Check for AI Credits Alerts
-    const aiCreditsAlertEnabled = CloudAccountSettingsStore.getSetting<boolean>(
+    const aiCreditsAlertEnabled = CloudAccountSettingsStore.getSetting(
       'ai_credits_alert_enabled',
       false,
+      BooleanSettingSchema,
     );
-    const aiCreditsAlertThreshold = CloudAccountSettingsStore.getSetting<number>(
+    const aiCreditsAlertThreshold = CloudAccountSettingsStore.getSetting(
       'ai_credits_alert_threshold',
       5000,
+      NumberSettingSchema,
     );
 
     if (aiCreditsAlertEnabled) {

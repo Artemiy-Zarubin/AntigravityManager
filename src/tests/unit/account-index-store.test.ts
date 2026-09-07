@@ -27,12 +27,39 @@ describe('account index store', () => {
     expect(loadAccountIndex(indexPath)).toEqual({});
   });
 
+  it('loads an account index only after validating every stored account', () => {
+    const accounts = {
+      'account-a': {
+        id: 'account-a',
+        name: 'Alice',
+        email: 'alice@example.com',
+        created_at: '2026-09-04T00:00:00.000Z',
+        last_used: '2026-09-04T00:00:00.000Z',
+      },
+    };
+    fs.writeFileSync(indexPath, JSON.stringify(accounts), 'utf-8');
+
+    expect(loadAccountIndex(indexPath)).toEqual(accounts);
+  });
+
   it('fails closed when an existing account index is malformed', () => {
     const malformed = '{"account-a":';
     fs.writeFileSync(indexPath, malformed, 'utf-8');
 
     expect(() => loadAccountIndex(indexPath)).toThrow();
     expect(fs.readFileSync(indexPath, 'utf-8')).toBe(malformed);
+  });
+
+  it('fails closed when an existing account index has an invalid account shape', () => {
+    const invalidIndex = JSON.stringify({
+      'account-a': {
+        id: 'account-a',
+      },
+    });
+    fs.writeFileSync(indexPath, invalidIndex, 'utf-8');
+
+    expect(() => loadAccountIndex(indexPath)).toThrow();
+    expect(fs.readFileSync(indexPath, 'utf-8')).toBe(invalidIndex);
   });
 
   it('replaces the index through a temporary file', () => {

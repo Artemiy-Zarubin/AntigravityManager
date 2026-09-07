@@ -8,6 +8,7 @@ import {
   AgyBinaryPatchAnalysis,
   patchAgyBinaryBuffer,
 } from '@/modules/antigravity-runtime/binary-patch/agyBinaryPatchCore';
+import { hasErrorCode } from '@/shared/errors/error-guards';
 
 const execFileAsync = promisify(execFile);
 
@@ -135,9 +136,7 @@ async function writeBackup(filePath: string, source: Buffer, mode: number): Prom
       }
       return backupPath;
     } catch (error) {
-      const errorCode =
-        error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-      if (errorCode !== 'EEXIST') {
+      if (!hasErrorCode(error, 'EEXIST')) {
         throw error;
       }
 

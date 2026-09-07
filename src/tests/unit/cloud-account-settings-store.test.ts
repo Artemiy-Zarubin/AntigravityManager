@@ -28,7 +28,7 @@ describe('CloudAccountSettingsStore.getActiveAccountIdForTarget', () => {
     const { logger } = await import('@/shared/logging/logger');
 
     expect(CloudAccountSettingsStore.getActiveAccountIdForTarget('ide')).toBe('');
-    expect(getSetting).toHaveBeenCalledWith('active_cloud_account.ide', '');
+    expect(getSetting).toHaveBeenCalledWith('active_cloud_account.ide', '', expect.anything());
     expect(logger.warn).toHaveBeenCalledWith(
       'Ignored invalid active account setting active_cloud_account.ide: expected a string',
     );

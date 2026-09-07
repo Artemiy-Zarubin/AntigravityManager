@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { isNumber, isObjectLike } from 'lodash-es';
+import { isNumber } from 'lodash-es';
 import { Check, ChevronRight, Circle } from 'lucide-react';
 import { cn } from '@/shared/ui/utils';
 
@@ -57,10 +57,10 @@ const DropdownMenuContent = React.forwardRef<
     if (collisionPadding < 0) {
       throw new Error('collisionPadding must be a non-negative number');
     }
-  } else if (isObjectLike(collisionPadding)) {
-    for (const key of Object.keys(collisionPadding)) {
-      if ((collisionPadding as any)[key] < 0) {
-        throw new Error(`collisionPadding.${key} must be a non-negative number`);
+  } else if (typeof collisionPadding === 'object' && collisionPadding !== null) {
+    for (const [side, padding] of Object.entries(collisionPadding)) {
+      if (padding !== undefined && padding < 0) {
+        throw new Error(`collisionPadding.${side} must be a non-negative number`);
       }
     }
   }

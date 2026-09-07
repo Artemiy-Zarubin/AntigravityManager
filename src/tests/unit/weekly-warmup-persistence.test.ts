@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { CloudAccountSettingsStore } from '@/modules/cloud-account/persistence/cloud-account-settings-store';
 
 const fixture = vi.hoisted(() => ({ get: vi.fn(), close: vi.fn() }));
@@ -21,6 +22,14 @@ describe('strict settings read boundary', () => {
     const config = { enabled: true, groups: ['claude'] };
     fixture.get.mockReturnValue({ value: JSON.stringify(config) });
     expect(CloudAccountSettingsStore.readSetting('weekly_warmup_config')).toEqual(config);
+    expect(fixture.close).toHaveBeenCalledOnce();
+  });
+  it('uses the supplied default when a persisted value fails its schema', () => {
+    fixture.get.mockReturnValue({ value: JSON.stringify({ enabled: 'yes' }) });
+
+    expect(CloudAccountSettingsStore.getSetting('auto_switch_enabled', false, z.boolean())).toBe(
+      false,
+    );
     expect(fixture.close).toHaveBeenCalledOnce();
   });
   it.each(['corrupt JSON', 'query failure'])(

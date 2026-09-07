@@ -1,10 +1,74 @@
-import { GeminiPart, Usage, UsageMetadata } from './types';
+import {
+  FunctionCall,
+  GeminiPart,
+  GeminiResponse,
+  GroundingChunk,
+  Usage,
+  UsageMetadata,
+} from './types';
 import { SignatureStore } from './SignatureStore';
 import { decodeSignature } from './signature-utils';
 import { toAnthropicMessageId } from './anthropic-message-id';
 import { logger } from '@/shared/logging/logger';
 
 type BlockType = 'None' | 'Text' | 'Thinking' | 'Function';
+
+interface StreamToolUseContentBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  signature?: string;
+}
+
+type StreamContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
+  | StreamToolUseContentBlock;
+
+type StreamDelta =
+  | { type: 'thinking_delta'; thinking: string }
+  | { type: 'signature_delta'; signature: string }
+  | { type: 'text_delta'; text: string }
+  | { type: 'input_json_delta'; partial_json: string };
+
+interface StreamMessageStart {
+  id: string;
+  type: 'message';
+  role: 'assistant';
+  content: [];
+  model: string;
+  stop_reason: null;
+  stop_sequence: null;
+  usage: Usage | undefined;
+}
+
+interface StreamErrorPayload {
+  type: 'network_error';
+  message: string;
+  code: 'stream_decode_error';
+  details: {
+    error_count: number;
+    suggestion: string;
+  };
+}
+
+interface StreamSseEventPayloads {
+  message_start: { type: 'message_start'; message: StreamMessageStart };
+  content_block_start: {
+    type: 'content_block_start';
+    index: number;
+    content_block: StreamContentBlock;
+  };
+  content_block_stop: { type: 'content_block_stop'; index: number };
+  content_block_delta: { type: 'content_block_delta'; index: number; delta: StreamDelta };
+  message_delta: {
+    type: 'message_delta';
+    delta: { stop_reason: string; stop_sequence: null };
+    usage: Usage;
+  };
+  error: { type: 'error'; error: StreamErrorPayload };
+}
 
 interface SignatureManager {
   pending: string | null;
@@ -44,7 +108,7 @@ export class StreamingState {
 
   // Web Search / Grounding buffers
   public webSearchQuery: string | null = null;
-  public groundingChunks: any[] | null = null;
+  public groundingChunks: GroundingChunk[] | null = null;
 
   private parseErrorCount: number = 0;
 
@@ -53,14 +117,17 @@ export class StreamingState {
     public readonly messageCount?: number,
   ) {}
 
-  public emit(eventType: string, data: any): string {
+  public emit<EventType extends keyof StreamSseEventPayloads>(
+    eventType: EventType,
+    data: StreamSseEventPayloads[EventType],
+  ): string {
     return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   }
 
-  public emitMessageStart(rawJson: any): string {
+  public emitMessageStart(response: GeminiResponse): string {
     if (this.messageStartSent) return '';
 
-    const usageMeta = rawJson.usageMetadata;
+    const usageMeta = response.usageMetadata;
     const usage: Usage | undefined = usageMeta
       ? {
           input_tokens: usageMeta.total_input_tokens ?? usageMeta.promptTokenCount ?? 0,
@@ -78,12 +145,12 @@ export class StreamingState {
         }
       : undefined;
 
-    const message = {
-      id: toAnthropicMessageId(rawJson.responseId),
+    const message: StreamMessageStart = {
+      id: toAnthropicMessageId(response.responseId),
       type: 'message',
       role: 'assistant',
       content: [],
-      model: rawJson.modelVersion || '',
+      model: response.modelVersion || '',
       stop_reason: null,
       stop_sequence: null,
       usage: usage,
@@ -97,7 +164,7 @@ export class StreamingState {
     });
   }
 
-  public startBlock(blockType: BlockType, contentBlock: any): string[] {
+  public startBlock(blockType: BlockType, contentBlock: StreamContentBlock): string[] {
     const chunks: string[] = [];
     if (this.blockType !== 'None') {
       chunks.push(...this.endBlock());
@@ -127,7 +194,7 @@ export class StreamingState {
       const sig = this.signatures.consume();
       if (sig) {
         // emit_delta "signature_delta"
-        chunks.push(this.emitDelta('signature_delta', { signature: sig }));
+        chunks.push(this.emitDelta({ type: 'signature_delta', signature: sig }));
       }
     }
 
@@ -144,8 +211,7 @@ export class StreamingState {
     return chunks;
   }
 
-  public emitDelta(deltaType: string, deltaContent: any): string {
-    const delta = { type: deltaType, ...deltaContent };
+  public emitDelta(delta: StreamDelta): string {
     return this.emit('content_block_delta', {
       type: 'content_block_delta',
       index: this.blockIndex,
@@ -172,8 +238,8 @@ export class StreamingState {
         }),
       );
 
-      chunks.push(this.emitDelta('thinking_delta', { thinking: '' }));
-      chunks.push(this.emitDelta('signature_delta', { signature: sig }));
+      chunks.push(this.emitDelta({ type: 'thinking_delta', thinking: '' }));
+      chunks.push(this.emitDelta({ type: 'signature_delta', signature: sig }));
 
       chunks.push(
         this.emit('content_block_stop', {
@@ -211,7 +277,7 @@ export class StreamingState {
           content_block: { type: 'text', text: '' },
         }),
       );
-      chunks.push(this.emitDelta('text_delta', { text: groundingText }));
+      chunks.push(this.emitDelta({ type: 'text_delta', text: groundingText }));
       chunks.push(
         this.emit('content_block_stop', { type: 'content_block_stop', index: this.blockIndex }),
       );
@@ -348,8 +414,8 @@ export class PartProcessor {
             content_block: { type: 'thinking', thinking: '' },
           }),
         );
-        chunks.push(this.state.emitDelta('thinking_delta', { thinking: '' }));
-        chunks.push(this.state.emitDelta('signature_delta', { signature: trailingSig }));
+        chunks.push(this.state.emitDelta({ type: 'thinking_delta', thinking: '' }));
+        chunks.push(this.state.emitDelta({ type: 'signature_delta', signature: trailingSig }));
         chunks.push(...this.state.endBlock());
       }
 
@@ -394,8 +460,8 @@ export class PartProcessor {
           content_block: { type: 'thinking', thinking: '' },
         }),
       );
-      chunks.push(this.state.emitDelta('thinking_delta', { thinking: '' }));
-      chunks.push(this.state.emitDelta('signature_delta', { signature: trailingSig }));
+      chunks.push(this.state.emitDelta({ type: 'thinking_delta', thinking: '' }));
+      chunks.push(this.state.emitDelta({ type: 'signature_delta', signature: trailingSig }));
       chunks.push(...this.state.endBlock());
     }
 
@@ -412,7 +478,7 @@ export class PartProcessor {
     }
 
     if (text) {
-      chunks.push(this.state.emitDelta('thinking_delta', { thinking: text }));
+      chunks.push(this.state.emitDelta({ type: 'thinking_delta', thinking: text }));
     }
 
     this.state.storeSignature(signature);
@@ -444,8 +510,8 @@ export class PartProcessor {
           content_block: { type: 'thinking', thinking: '' },
         }),
       );
-      chunks.push(this.state.emitDelta('thinking_delta', { thinking: '' }));
-      chunks.push(this.state.emitDelta('signature_delta', { signature: trailingSig }));
+      chunks.push(this.state.emitDelta({ type: 'thinking_delta', thinking: '' }));
+      chunks.push(this.state.emitDelta({ type: 'signature_delta', signature: trailingSig }));
       chunks.push(...this.state.endBlock());
     }
 
@@ -453,7 +519,7 @@ export class PartProcessor {
     if (signature) {
       // Start text block
       chunks.push(...this.state.startBlock('Text', { type: 'text', text: '' }));
-      chunks.push(this.state.emitDelta('text_delta', { text: text }));
+      chunks.push(this.state.emitDelta({ type: 'text_delta', text: text }));
       chunks.push(...this.state.endBlock());
 
       // Empty thinking block for signature
@@ -464,8 +530,8 @@ export class PartProcessor {
           content_block: { type: 'thinking', thinking: '' },
         }),
       );
-      chunks.push(this.state.emitDelta('thinking_delta', { thinking: '' }));
-      chunks.push(this.state.emitDelta('signature_delta', { signature: signature }));
+      chunks.push(this.state.emitDelta({ type: 'thinking_delta', thinking: '' }));
+      chunks.push(this.state.emitDelta({ type: 'signature_delta', signature: signature }));
       chunks.push(...this.state.endBlock());
 
       return chunks;
@@ -475,22 +541,19 @@ export class PartProcessor {
     if (this.state.currentBlockType() !== 'Text') {
       chunks.push(...this.state.startBlock('Text', { type: 'text', text: '' }));
     }
-    chunks.push(this.state.emitDelta('text_delta', { text: text }));
+    chunks.push(this.state.emitDelta({ type: 'text_delta', text: text }));
 
     return chunks;
   }
 
-  private processFunctionCall(
-    fc: { name: string; args: any; id?: string },
-    signature?: string,
-  ): string[] {
+  private processFunctionCall(fc: FunctionCall, signature?: string): string[] {
     const chunks: string[] = [];
 
     this.state.markToolUsed();
 
     const toolId = fc.id || `${fc.name}-${Math.random().toString(36).substr(2, 9)}`;
 
-    const toolUse: any = {
+    const toolUse: StreamToolUseContentBlock = {
       type: 'tool_use',
       id: toolId,
       name: fc.name,
@@ -513,7 +576,7 @@ export class PartProcessor {
     // input_json_delta
     if (fc.args) {
       const jsonStr = JSON.stringify(fc.args);
-      chunks.push(this.state.emitDelta('input_json_delta', { partial_json: jsonStr }));
+      chunks.push(this.state.emitDelta({ type: 'input_json_delta', partial_json: jsonStr }));
     }
 
     chunks.push(...this.state.endBlock());

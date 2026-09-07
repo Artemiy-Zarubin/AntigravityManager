@@ -63,6 +63,41 @@ describe('thought signature compatibility', () => {
     }
   });
 
+  it('concatenates only text blocks from an array tool result', () => {
+    const request: ClaudeRequest = {
+      model: 'gemini-3-flash',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'call_structured_result',
+              content: [
+                { type: 'text', text: 'first line' },
+                { type: 'thinking', thinking: 'ignore this block' },
+                { type: 'text', text: 'second line' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const body = transformClaudeRequestIn(request);
+
+    expect(body.request.contents[0]?.parts).toEqual([
+      {
+        functionResponse: {
+          name: 'call_structured_result',
+          response: { result: 'first line\nsecond line' },
+          id: 'call_structured_result',
+        },
+      },
+    ]);
+  });
+
   it('keeps gemini-pro-agent thinking enabled and injects both sentinel signature fields', () => {
     const request: ClaudeRequest = {
       model: 'gemini-3.1-pro-high',

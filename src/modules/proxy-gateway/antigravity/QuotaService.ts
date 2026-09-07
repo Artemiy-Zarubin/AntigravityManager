@@ -13,6 +13,10 @@ const CLOUD_CODE_BASE_URL = 'https://cloudcode-pa.googleapis.com';
 const USER_AGENT = 'antigravity/1.11.3 Darwin/arm64'; // Keeping the same UA as source
 const QUOTA_FALLBACK_DELAY_MS = 1000;
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // Service Class
 export class QuotaService {
   private static createClient(timeoutSecs: number = 15): AxiosInstance {
@@ -62,8 +66,8 @@ export class QuotaService {
       } else {
         logger.warn(`⚠️  [${email}] loadCodeAssist failed: Status: ${res.status}`);
       }
-    } catch (error: any) {
-      logger.error(`❌ [${email}] loadCodeAssist Network Error: ${error.message}`);
+    } catch (error: unknown) {
+      logger.error(`❌ [${email}] loadCodeAssist Network Error: ${getErrorMessage(error)}`);
     }
 
     return [undefined, undefined];
@@ -117,7 +121,7 @@ export class QuotaService {
           }
 
           return { quotaData, projectId };
-        } catch (error: any) {
+        } catch (error: unknown) {
           let shouldFallback = true;
 
           if (axios.isAxiosError(error)) {
@@ -160,7 +164,7 @@ export class QuotaService {
             lastError = new Error(`HTTP ${status} - ${responseBodyText}`);
             shouldFallback = !isNumber(status);
           } else {
-            logger.warn(`Quota API request failed at ${endpoint}: ${error.message}`);
+            logger.warn(`Quota API request failed at ${endpoint}: ${getErrorMessage(error)}`);
             lastError = error instanceof Error ? error : new Error(String(error));
           }
 
@@ -169,7 +173,7 @@ export class QuotaService {
             await this.waitBeforeNextQuotaEndpoint();
             break;
           } else {
-            throw lastError ?? new Error(`Quota query failed: ${error.message}`);
+            throw lastError ?? new Error(`Quota query failed: ${getErrorMessage(error)}`);
           }
         }
       }

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { isErrorWithHttpStatus } from '@/shared/errors/error-guards';
 import {
   BatchJobError,
   OPENAI_SERVABLE_BATCH_ENDPOINT,
@@ -9,6 +11,9 @@ import {
 export const OPENAI_BATCH_ID_PREFIX = 'batch_';
 /** OpenAI documents exactly one window, so anything else is a client mistake. */
 export const OPENAI_COMPLETION_WINDOW = '24h';
+
+const JsonObjectSchema = z.object({}).passthrough();
+const StringMetadataSchema = z.record(z.string(), z.string());
 
 export interface OpenAIBatchObject {
   id: string;
@@ -96,17 +101,17 @@ export function normalizeBatchMetadata(value: unknown): Record<string, string> |
   if (value === undefined || value === null) {
     return undefined;
   }
-  if (typeof value !== 'object' || Array.isArray(value)) {
+
+  const parsedMetadata = StringMetadataSchema.safeParse(value);
+  if (!parsedMetadata.success) {
+    const invalidKey = parsedMetadata.error.issues[0]?.path[0];
+    if (typeof invalidKey === 'string') {
+      throw BatchJobError.invalid(`metadata.${invalidKey} must be a string`, 'metadata');
+    }
     throw BatchJobError.invalid('metadata must be an object of string values', 'metadata');
   }
-  const metadata: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof entry !== 'string') {
-      throw BatchJobError.invalid(`metadata.${key} must be a string`, 'metadata');
-    }
-    metadata[key] = entry;
-  }
-  return metadata;
+
+  return parsedMetadata.data;
 }
 
 export interface ParsedBatchInputLine {
@@ -129,12 +134,19 @@ export function parseBatchInputJsonl(content: string, endpoint: string): ParsedB
     if (!line) {
       continue;
     }
-    let record: Record<string, unknown>;
+    let rawRecord: unknown;
     try {
-      record = JSON.parse(line) as Record<string, unknown>;
+      rawRecord = JSON.parse(line);
     } catch {
       throw BatchJobError.invalid(`Line ${index + 1} of the input file is not valid JSON`);
     }
+
+    const parsedRecord = JsonObjectSchema.safeParse(rawRecord);
+    if (!parsedRecord.success) {
+      throw BatchJobError.invalid(`Line ${index + 1} of the input file must be an object`);
+    }
+
+    const record = parsedRecord.data;
     const customId = record.custom_id;
     if (typeof customId !== 'string' || !customId.trim()) {
       throw BatchJobError.invalid(`Line ${index + 1} of the input file has no custom_id`);
@@ -144,11 +156,13 @@ export function parseBatchInputJsonl(content: string, endpoint: string): ParsedB
         `Line ${index + 1} targets '${String(record.url)}' but the batch endpoint is '${endpoint}'`,
       );
     }
-    const body = record.body;
-    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    const parsedBody = JsonObjectSchema.safeParse(record.body);
+    if (!parsedBody.success) {
       throw BatchJobError.invalid(`Line ${index + 1} of the input file has no body object`);
     }
-    const model = (body as Record<string, unknown>).model;
+
+    const body = parsedBody.data;
+    const model = body.model;
     parsed.push({
       customId: customId.trim(),
       body,
@@ -207,7 +221,9 @@ export function openAIBatchErrorResponse(error: unknown): {
   const statusCode =
     error instanceof BatchJobError
       ? error.httpStatus
-      : ((error as { httpStatus?: number })?.httpStatus ?? 500);
+      : isErrorWithHttpStatus(error)
+        ? error.httpStatus
+        : 500;
   return {
     statusCode,
     body: {

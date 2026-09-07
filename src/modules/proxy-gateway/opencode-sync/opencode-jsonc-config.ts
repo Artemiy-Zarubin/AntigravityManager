@@ -57,6 +57,14 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function toJsoncObject(value: object): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    result[key] = child;
+  }
+  return result;
+}
+
 function buildThinkingVariant(
   budget: number,
   includeTopLevelBudget = false,
@@ -522,7 +530,7 @@ export function updateOpenCodeConfigJsonc(
     updated = mergeJsoncObject(
       updated,
       [...PROVIDER_PATH, 'models', model.id],
-      definition as unknown as Record<string, unknown>,
+      toJsoncObject(definition),
       formattingOptions,
     );
   }

@@ -296,6 +296,47 @@ describe('local files API', () => {
     expect(JSON.stringify(sent(listed))).toContain(resource.file.name);
   });
 
+  it('uses the multipart filename when Gemini nested metadata is malformed', async () => {
+    const { gemini } = createSurfaces();
+    const uploaded = createReplyMock();
+
+    await gemini.upload(
+      createMultipartRequest(
+        [['metadata', JSON.stringify({ file: ['not-an-object'], displayName: 'Ignored name' })]],
+        { bytes: png, filename: 'multipart-name.png', mimeType: 'image/png' },
+      ) as never,
+      uploaded as never,
+    );
+
+    expect(statusOf(uploaded)).toBe(200);
+    expect(sent(uploaded)).toMatchObject({ file: { displayName: 'multipart-name.png' } });
+  });
+
+  it('uses the multipart filename when Gemini preferred display-name metadata is malformed', async () => {
+    const { gemini } = createSurfaces();
+    const uploaded = createReplyMock();
+
+    await gemini.upload(
+      createMultipartRequest(
+        [
+          [
+            'metadata',
+            JSON.stringify({
+              file: { display_name: 42, displayName: 'Ignored name' },
+            }),
+          ],
+        ],
+        { bytes: png, filename: 'preferred-name-fallback.png', mimeType: 'image/png' },
+      ) as never,
+      uploaded as never,
+    );
+
+    expect(statusOf(uploaded)).toBe(200);
+    expect(sent(uploaded)).toMatchObject({
+      file: { displayName: 'preferred-name-fallback.png' },
+    });
+  });
+
   it('preserves each client dialect list envelope and shared cursor semantics', async () => {
     const { client } = createSurfaces();
     await uploadOpenAI(client, {

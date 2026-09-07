@@ -144,6 +144,58 @@ describe('RateLimitTrackerService parity replay', () => {
     expect(tracker.isRateLimited('acc-2', 'gemini-2.5-pro')).toBe(false);
   });
 
+  it('ignores malformed Google error details while retaining valid details', () => {
+    const tracker = new RateLimitTrackerService();
+    const info = tracker.parseAndMarkFromError({
+      accountId: 'acc-malformed-detail',
+      status: 429,
+      body: JSON.stringify({
+        error: {
+          details: [null, { reason: 'QUOTA_EXHAUSTED', metadata: { quotaResetDelay: '42s' } }],
+        },
+      }),
+      model: 'gemini-2.5-flash',
+      backoffSteps: [60, 300, 1800, 7200],
+    });
+
+    expect(info).toMatchObject({
+      reason: RateLimitReason.QuotaExhausted,
+      retryAfterSec: 44,
+      model: 'gemini-2.5-flash',
+    });
+  });
+
+  it('retains a valid reason when a sibling retry detail has a structured value', () => {
+    const tracker = new RateLimitTrackerService();
+    const info = tracker.parseAndMarkFromError({
+      accountId: 'acc-structured-retry-detail',
+      status: 503,
+      body: JSON.stringify({
+        error: {
+          status: 'UNAVAILABLE',
+          details: [
+            {
+              reason: 'MODEL_CAPACITY_EXHAUSTED',
+              retryDelay: { seconds: 30 },
+            },
+          ],
+        },
+      }),
+      model: 'gemini-3.1-pro-high',
+      backoffSteps: [60, 300, 1800, 7200],
+    });
+
+    expect(info).toMatchObject({
+      reason: RateLimitReason.ModelCapacityExhausted,
+      retryAfterSec: 32,
+      model: 'gemini-3.1-pro-high',
+    });
+    expect(tracker.isRateLimited('acc-structured-retry-detail', 'gemini-3.1-pro-high')).toBe(true);
+    expect(tracker.isRateLimited('acc-structured-retry-detail', 'gemini-3.1-flash-lite')).toBe(
+      false,
+    );
+  });
+
   it('uses backoff steps when no header/body retry hint', () => {
     const tracker = new RateLimitTrackerService();
     const steps = [60, 300, 1800, 7200];

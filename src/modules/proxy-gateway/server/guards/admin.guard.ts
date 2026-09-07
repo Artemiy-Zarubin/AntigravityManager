@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { getServerConfig } from '../../../../server/server-config';
-import { extractApiKeyToken, hasConfiguredApiKey, RequestHeaders } from './api-key-auth.util';
+import { extractApiKeyToken, hasConfiguredApiKey, type RequestHeaders } from './api-key-auth.util';
 
 @Injectable()
 export class AdminGuard implements CanActivate {
@@ -12,9 +12,8 @@ export class AdminGuard implements CanActivate {
       throw new UnauthorizedException('Admin API key is not configured');
     }
 
-    const request = context.switchToHttp().getRequest();
-    const headers = request.headers as RequestHeaders;
-    const clientToken = extractApiKeyToken(headers);
+    const request = context.switchToHttp().getRequest<{ headers: RequestHeaders }>();
+    const clientToken = extractApiKeyToken(request.headers);
 
     if (clientToken && clientToken === apiKey) {
       return true;

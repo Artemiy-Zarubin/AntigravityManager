@@ -200,6 +200,38 @@ describe('local proxy file store', () => {
     expect((await restarted.get(record.id)).bytes.equals(png)).toBe(true);
   });
 
+  it('ignores malformed index records without discarding valid handles', async () => {
+    const rootDirectory = mkdtempSync(join(tmpdir(), 'agm-store-'));
+    createdRoots.push(rootDirectory);
+
+    const first = createStore({ rootDirectory });
+    const record = await first.put({ bytes: pdf, displayName: 'kept.pdf' });
+    const indexPath = join(rootDirectory, 'index.json');
+    const persisted = JSON.parse(await readFile(indexPath, 'utf8'));
+    writeFileSync(
+      indexPath,
+      JSON.stringify({ version: 1, files: [...persisted.files, { id: 'invalid' }] }),
+    );
+
+    const restarted = createStore({ rootDirectory });
+
+    await expect(restarted.stat(record.id)).resolves.toMatchObject({ displayName: 'kept.pdf' });
+    await expect(restarted.list()).resolves.toMatchObject({ files: [record] });
+  });
+
+  it('starts clean when the index version is unsupported', async () => {
+    const rootDirectory = mkdtempSync(join(tmpdir(), 'agm-store-'));
+    createdRoots.push(rootDirectory);
+
+    const first = createStore({ rootDirectory });
+    await first.put({ bytes: png });
+    writeFileSync(join(rootDirectory, 'index.json'), JSON.stringify({ version: 2, files: [] }));
+
+    const restarted = createStore({ rootDirectory });
+
+    await expect(restarted.list()).resolves.toMatchObject({ files: [] });
+  });
+
   it('drops a handle whose content vanished underneath it', async () => {
     const rootDirectory = mkdtempSync(join(tmpdir(), 'agm-store-'));
     createdRoots.push(rootDirectory);

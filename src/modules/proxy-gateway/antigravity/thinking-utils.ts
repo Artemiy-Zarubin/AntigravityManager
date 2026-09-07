@@ -6,22 +6,10 @@
  * Solution: Validate and convert invalid blocks to text instead of dropping
  */
 import { logger } from '@/shared/logging/logger';
+import type { ContentBlock } from './types';
 
 /** Minimum length for a valid thought signature */
 const MIN_SIGNATURE_LENGTH = 10;
-
-export interface ThinkingBlock {
-  type: 'thinking';
-  thinking: string;
-  signature?: string;
-}
-
-export interface TextBlock {
-  type: 'text';
-  text: string;
-}
-
-export type ContentBlock = ThinkingBlock | TextBlock | { type: string; [key: string]: any };
 
 /**
  * Check if a thinking block has a valid signature
@@ -40,7 +28,7 @@ export function hasValidSignature(block: ContentBlock): boolean {
     return true; // Non-thinking blocks are always valid
   }
 
-  const thinkingBlock = block as ThinkingBlock;
+  const thinkingBlock = block;
 
   // Empty thinking + any signature = valid (trailing signature)
   if (!thinkingBlock.thinking || thinkingBlock.thinking.length === 0) {
@@ -74,7 +62,7 @@ export function gracefulDegradeThinking(block: ContentBlock): ContentBlock | nul
     return block;
   }
 
-  const thinkingBlock = block as ThinkingBlock;
+  const thinkingBlock = block;
 
   if (hasValidSignature(block)) {
     return block;

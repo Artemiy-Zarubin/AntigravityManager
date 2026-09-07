@@ -2,10 +2,58 @@ import { describe, expect, it } from 'vitest';
 import {
   buildResponsesChatRequest,
   normalizeResponsesMessageContent,
+  parseResponsesRequestBody,
 } from '@/modules/proxy-gateway/server/modules/openai/responses/openai-responses-request';
 import { mergeOpenAIResponsesInputItems } from '@/modules/proxy-gateway/server/modules/openai/responses/openai-responses-session.store';
 
 describe('Responses input compatibility', () => {
+  it('validates a WebSocket Responses request before mapping it', () => {
+    expect(
+      parseResponsesRequestBody({
+        model: 'gpt-5-codex',
+        input: 'Continue the task.',
+        metadata: { trace: 'ws-1' },
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'apply_patch',
+              parameters: { type: 'object' },
+            },
+          },
+        ],
+        tool_choice: { type: 'function', function: { name: 'apply_patch' } },
+        stream: true,
+        text: { format: { type: 'text' } },
+      }),
+    ).toMatchObject({
+      model: 'gpt-5-codex',
+      input: 'Continue the task.',
+      metadata: { trace: 'ws-1' },
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'apply_patch',
+            parameters: { type: 'object' },
+          },
+        },
+      ],
+      tool_choice: { type: 'function', function: { name: 'apply_patch' } },
+      stream: true,
+      text: { format: { type: 'text' } },
+    });
+  });
+
+  it.each([
+    { model: 7 },
+    { metadata: ['not', 'an', 'object'] },
+    { tools: [{ type: 'function', function: { name: 7 } }] },
+    { tool_choice: { type: 'function', function: { name: 7 } } },
+  ])('rejects a malformed WebSocket request field: %j', (body) => {
+    expect(parseResponsesRequestBody(body)).toBeNull();
+  });
+
   it.each([undefined, null, 4, false])(
     'filters commentary with type %s without rewriting stored items',
     (type) => {

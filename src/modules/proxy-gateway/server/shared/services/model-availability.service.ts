@@ -201,7 +201,12 @@ const persistentAvailabilityAdapter: ProxyModelAvailabilityPersistence | undefin
   process.env.NODE_ENV === 'test'
     ? undefined
     : {
-        load: () => CloudAccountSettingsStore.getSetting(PERSISTENCE_KEY, []),
+        load: () =>
+          CloudAccountSettingsStore.getSetting(
+            PERSISTENCE_KEY,
+            [],
+            ProxyModelAvailabilityListSchema,
+          ),
         save: (entries) => CloudAccountSettingsStore.setSetting(PERSISTENCE_KEY, entries),
       };
 

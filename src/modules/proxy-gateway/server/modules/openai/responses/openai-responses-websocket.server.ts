@@ -116,7 +116,8 @@ function handleConnection(
 
 function parseClientPayload(rawData: RawData): unknown {
   try {
-    return JSON.parse(rawDataToString(rawData)) as unknown;
+    const payload: unknown = JSON.parse(rawDataToString(rawData));
+    return payload;
   } catch (error) {
     throw new Error(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }

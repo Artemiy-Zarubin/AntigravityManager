@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { isString } from 'lodash-es';
 import { getAntigravityVersion } from '@/modules/antigravity-runtime/utils/antigravityVersion';
+import { createAxiosHttpClient } from '@/shared/http/axios-json-client';
 import { logger } from '../../../../../shared/logging/logger';
 
 const REMOTE_VERSION_URL = 'https://antigravity-auto-updater-974169037036.us-central1.run.app';
@@ -8,6 +9,7 @@ const CHANGELOG_URL = 'https://antigravity.google/changelog';
 export const FALLBACK_VERSION = '2.0.3';
 const DEFAULT_REMOTE_TIMEOUT_MS = 2500;
 const VERSION_REGEX = /\d+\.\d+\.\d+/g;
+const userAgentHttpClient = createAxiosHttpClient(axios.create());
 
 type UserAgentSource = 'local' | 'remote' | 'changelog' | 'fallback';
 
@@ -118,11 +120,14 @@ export function resolveLocalInstalledVersion(): string | null {
 async function fetchTextPayload(url: string): Promise<string | null> {
   try {
     const discoveryVersion = resolveLocalInstalledVersion() ?? FALLBACK_VERSION;
-    const response = await axios.get<string>(url, {
-      timeout: DEFAULT_REMOTE_TIMEOUT_MS,
-      responseType: 'text',
-      headers: {
-        'User-Agent': buildUserAgent(discoveryVersion),
+    const response = await userAgentHttpClient.requestRaw(url, {
+      operation: 'default-user-agent-discovery',
+      request: {
+        timeout: DEFAULT_REMOTE_TIMEOUT_MS,
+        responseType: 'text',
+        headers: {
+          'User-Agent': buildUserAgent(discoveryVersion),
+        },
       },
     });
 

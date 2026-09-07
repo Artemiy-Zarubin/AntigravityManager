@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { z } from 'zod';
 
 import { logger } from '@/shared/logging/logger';
 import { isStoreFileId, type StoredFileRecord } from './file-store.types';
@@ -32,6 +33,25 @@ const INDEX_FILE_NAME = 'index.json';
 const BLOB_DIRECTORY = 'blobs';
 const TEMP_DIRECTORY = 'tmp';
 
+const StoredFileRecordSchema = z.object({
+  id: z.string().refine(isStoreFileId),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/u),
+  sizeBytes: z.number(),
+  mimeType: z.string(),
+  declaredMimeType: z.string().optional(),
+  sniffedMimeType: z.string().optional(),
+  displayName: z.string(),
+  purpose: z.string().optional(),
+  createTimeMs: z.number(),
+  updateTimeMs: z.number(),
+  expireTimeMs: z.number(),
+});
+
+const FileIndexDocumentSchema = z.object({
+  version: z.literal(1),
+  files: z.array(z.unknown()),
+});
+
 export class FileStoreDisk {
   private pendingWrite: Promise<void> = Promise.resolve();
 
@@ -48,17 +68,23 @@ export class FileStoreDisk {
     await mkdir(join(this.rootDirectory, TEMP_DIRECTORY), { recursive: true });
     await this.discardStaleTempFiles();
 
-    let parsed: FileIndexDocument | null = null;
+    let entries: unknown[] = [];
     try {
       const raw = await readFile(join(this.rootDirectory, INDEX_FILE_NAME), 'utf8');
-      parsed = JSON.parse(raw) as FileIndexDocument;
+      const rawIndex: unknown = JSON.parse(raw);
+      const parsedIndex = FileIndexDocumentSchema.safeParse(rawIndex);
+      if (parsedIndex.success) {
+        entries = parsedIndex.data.files;
+      }
     } catch {
-      parsed = null;
+      entries = [];
     }
 
-    const entries = Array.isArray(parsed?.files) ? parsed.files : [];
     return {
-      records: entries.filter(isValidRecord),
+      records: entries.flatMap((entry) => {
+        const parsedRecord = StoredFileRecordSchema.safeParse(entry);
+        return parsedRecord.success ? [parsedRecord.data] : [];
+      }),
       indexEntryCount: entries.length,
     };
   }
@@ -155,23 +181,4 @@ export class FileStoreDisk {
       // No temp directory yet is the normal first-run case.
     }
   }
-}
-
-function isValidRecord(value: unknown): value is StoredFileRecord {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const record = value as Partial<StoredFileRecord>;
-  return (
-    typeof record.id === 'string' &&
-    isStoreFileId(record.id) &&
-    typeof record.sha256 === 'string' &&
-    /^[0-9a-f]{64}$/u.test(record.sha256) &&
-    typeof record.sizeBytes === 'number' &&
-    typeof record.mimeType === 'string' &&
-    typeof record.displayName === 'string' &&
-    typeof record.createTimeMs === 'number' &&
-    typeof record.updateTimeMs === 'number' &&
-    typeof record.expireTimeMs === 'number'
-  );
 }

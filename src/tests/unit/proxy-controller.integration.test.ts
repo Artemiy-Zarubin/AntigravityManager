@@ -1154,6 +1154,72 @@ describe('ProxyController Integration', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it('passes image edit input to the Gemini project-context fallback', async () => {
+    const proxyService = {
+      handleChatCompletions: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'You are currently configured to use a Google Cloud Project but lack a Gemini Code Assist license. (#3501)',
+          ),
+        ),
+      handleGeminiGenerateContent: vi.fn().mockResolvedValue({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: 'image/png',
+                    data: 'FALLBACKIMG',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    };
+    const controller = new ProxyController(proxyService as any);
+    const reply = createReplyMock();
+    const imageData = Buffer.from('source-image');
+
+    await controller.imageEdits(
+      createMultipartRequest([
+        { type: 'field', fieldname: 'prompt', value: 'make it brighter' },
+        {
+          type: 'file',
+          fieldname: 'image',
+          filename: 'source.png',
+          mimetype: 'image/png',
+          data: imageData,
+        },
+      ]) as any,
+      reply as any,
+    );
+
+    expect(proxyService.handleGeminiGenerateContent).toHaveBeenCalledWith(
+      'gemini-3.1-flash-image',
+      expect.objectContaining({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'make it brighter' },
+              {
+                inlineData: {
+                  mimeType: 'image/png',
+                  data: imageData.toString('base64'),
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('rejects image edits request without multipart boundary', async () => {
     const proxyService = {
       handleChatCompletions: vi.fn(),

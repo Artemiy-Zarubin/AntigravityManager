@@ -16,6 +16,7 @@ import { toCustomToolArguments } from '@/modules/proxy-gateway/antigravity/Custo
 import {
   OpenAIChatRequest,
   OpenAIContentPart,
+  OpenAITool,
   OpenAIToolCall,
 } from '@/modules/proxy-gateway/server/common/interfaces/request-interfaces';
 import { parseOpenAIInputAudio } from '../chat/openai-input-audio';
@@ -134,6 +135,58 @@ type ResponsesToolCallItem = Exclude<
 >;
 
 const JsonRecordSchema = z.record(z.string(), z.unknown());
+const OpenAIToolSchema: z.ZodType<OpenAITool> = z.lazy(() =>
+  z
+    .object({
+      type: z.string(),
+      name: z.string().optional(),
+      tools: z.array(OpenAIToolSchema).optional(),
+      function: z
+        .object({
+          name: z.string(),
+          description: z.string().optional(),
+          parameters: JsonRecordSchema.optional(),
+        })
+        .optional(),
+    })
+    .catchall(z.unknown()),
+);
+const ResponsesToolChoiceSchema = z.union([
+  z.string(),
+  z.object({
+    type: z.string(),
+    function: z
+      .object({
+        name: z.string(),
+      })
+      .optional(),
+  }),
+]);
+const ResponsesRequestBodySchema = z
+  .object({
+    model: z.string().optional(),
+    instructions: z.string().optional(),
+    input: z.unknown().optional(),
+    metadata: JsonRecordSchema.optional(),
+    previous_response_id: z.string().optional(),
+    store: z.boolean().optional(),
+    tools: z.array(OpenAIToolSchema).optional(),
+    max_output_tokens: z.number().optional(),
+    temperature: z.number().optional(),
+    top_p: z.number().optional(),
+    presence_penalty: z.number().optional(),
+    frequency_penalty: z.number().optional(),
+    seed: z.number().optional(),
+    tool_choice: ResponsesToolChoiceSchema.optional(),
+    stream: z.boolean().optional(),
+    user: z.string().optional(),
+    text: z
+      .object({
+        format: z.unknown().optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
 const ResponsesCompletedEventSchema = z.object({
   type: z.literal('response.completed'),
   response: z.unknown().optional(),
@@ -153,9 +206,6 @@ const ResponsesInputAudioSchema = z.object({
 });
 const ResponsesOutputSchema = z.object({
   content: z.string().optional(),
-});
-const ResponsesImageUrlValueSchema = z.object({
-  url: z.string().min(1),
 });
 const ResponsesInlineDataSchema = z.object({
   data: z.string().min(1),
@@ -177,6 +227,12 @@ function parseResponsesInputItems(input: unknown[]): ResponsesInputItem[] {
 
 export function parseResponsesInputItem(input: unknown): ResponsesInputItem | null {
   const parsed = ResponsesInputItemSchema.safeParse(input);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Validates a Responses request transported outside the typed HTTP controller. */
+export function parseResponsesRequestBody(value: unknown): ResponsesRequestBody | null {
+  const parsed = ResponsesRequestBodySchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
@@ -589,18 +645,6 @@ export function normalizeResponsesOutput(output: unknown): string {
     return '';
   }
   return JSON.stringify(output);
-}
-
-export function resolveImageUrl(block: Record<string, unknown>): string | null {
-  const raw = block.image_url;
-  if (isString(raw)) {
-    return raw;
-  }
-  const rawRecord = ResponsesImageUrlValueSchema.safeParse(raw);
-  if (rawRecord.success) {
-    return rawRecord.data.url;
-  }
-  return null;
 }
 
 export function resolveInlineData(

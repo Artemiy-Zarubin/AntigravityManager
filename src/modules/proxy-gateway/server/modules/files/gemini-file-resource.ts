@@ -1,5 +1,27 @@
+import { z } from 'zod';
+import { isErrorWithHttpStatus } from '@/shared/errors/error-guards';
 import { FileStoreError, type StoredFileRecord } from './file-store.types';
 import { FileUploadError } from './file-upload-request';
+
+const GeminiDisplayNameSchema = z.string();
+
+const GeminiUploadFileSchema = z
+  .object({
+    display_name: z.unknown().optional(),
+    displayName: z.unknown().optional(),
+  })
+  .passthrough();
+
+const GeminiUploadMetadataSchema = z
+  .object({
+    // Keep this raw until the selection rule below decides whether it must be
+    // a valid nested File object. A malformed, non-null `file` must not make
+    // us treat the top-level fields as its fallback.
+    file: z.unknown().optional(),
+    display_name: z.unknown().optional(),
+    displayName: z.unknown().optional(),
+  })
+  .passthrough();
 
 /**
  * Shapes for Google's documented `File` resource.
@@ -81,8 +103,7 @@ function resolveStatus(error: unknown): number {
   if (error instanceof FileStoreError || error instanceof FileUploadError) {
     return error.httpStatus;
   }
-  const status = (error as { httpStatus?: unknown })?.httpStatus;
-  return typeof status === 'number' ? status : 500;
+  return isErrorWithHttpStatus(error) ? error.httpStatus : 500;
 }
 
 /**
@@ -95,12 +116,40 @@ export function readGeminiUploadDisplayName(fields: Record<string, string>): str
   if (!raw) {
     return undefined;
   }
+
   try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const file = (parsed.file ?? parsed) as Record<string, unknown>;
-    const displayName = file.display_name ?? file.displayName;
-    return typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined;
+    const rawMetadata: unknown = JSON.parse(raw);
+    const parsedMetadata = GeminiUploadMetadataSchema.safeParse(rawMetadata);
+    if (!parsedMetadata.success) {
+      return undefined;
+    }
+
+    const metadata = parsedMetadata.data;
+    if (Object.hasOwn(metadata, 'file') && metadata.file !== null) {
+      const parsedFile = GeminiUploadFileSchema.safeParse(metadata.file);
+      if (!parsedFile.success) {
+        return undefined;
+      }
+      return readDisplayName(parsedFile.data);
+    }
+
+    return readDisplayName(metadata);
   } catch {
     return undefined;
   }
+}
+
+function readDisplayName(fields: {
+  display_name?: unknown;
+  displayName?: unknown;
+}): string | undefined {
+  const parsedDisplayName = GeminiDisplayNameSchema.safeParse(
+    fields.display_name ?? fields.displayName,
+  );
+  if (!parsedDisplayName.success) {
+    return undefined;
+  }
+
+  const displayName = parsedDisplayName.data.trim();
+  return displayName || undefined;
 }

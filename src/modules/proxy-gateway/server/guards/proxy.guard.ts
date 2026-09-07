@@ -6,7 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { getServerConfig } from '../../../../server/server-config';
-import { extractApiKeyToken, hasConfiguredApiKey, RequestHeaders } from './api-key-auth.util';
+import { extractApiKeyToken, hasConfiguredApiKey, type RequestHeaders } from './api-key-auth.util';
 import { openCodeCredentialService } from '../../opencode-sync/opencode-credentials';
 import { buildAuthErrorBody, resolveAuthErrorSurface } from '../common/auth-error-envelope';
 
@@ -15,15 +15,16 @@ export class ProxyGuard implements CanActivate {
   private readonly logger = new Logger(ProxyGuard.name);
 
   canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest();
+    const request = context
+      .switchToHttp()
+      .getRequest<{ headers: RequestHeaders; ip: string; url?: string }>();
 
     const config = getServerConfig();
 
     // 1. Check for API Key in config
     const apiKey = config?.api_key;
 
-    const headers = request.headers as RequestHeaders;
-    const clientToken = extractApiKeyToken(headers);
+    const clientToken = extractApiKeyToken(request.headers);
 
     // The OpenCode credential is accepted only by this model-proxy guard.
     // AdminGuard intentionally knows nothing about it, so revocation and scope stay independent.

@@ -1,8 +1,9 @@
 import { isEmpty, isString } from 'lodash-es';
+import type { IncomingHttpHeaders } from 'node:http';
 
-export type RequestHeaderValue = string | string[] | undefined;
+export type RequestHeaderValue = IncomingHttpHeaders[string];
 
-export type RequestHeaders = Record<string, RequestHeaderValue>;
+export type RequestHeaders = IncomingHttpHeaders;
 
 export function hasConfiguredApiKey(apiKey: string | undefined): apiKey is string {
   return isString(apiKey) && !isEmpty(apiKey.trim());

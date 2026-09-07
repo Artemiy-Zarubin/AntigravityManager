@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { isEmpty, isNumber, isObjectLike, isString } from 'lodash-es';
+import { isEmpty, isNumber, isString } from 'lodash-es';
+import { z } from 'zod';
 import { getQuotaModelFamilyId } from '@/modules/cloud-account/utils/quota-model-families';
 
 export enum RateLimitReason {
@@ -22,22 +23,36 @@ type FailureCountEntry = {
   lastFailureMs: number;
 };
 
-interface GoogleErrorDetail {
-  reason?: string;
-  retryDelay?: string;
-  metadata?: {
-    quotaResetDelay?: string;
-    retryDelay?: string;
-  };
-}
+const GoogleErrorMetadataSchema = z.object({
+  quotaResetDelay: z.string().optional().catch(undefined),
+  retryDelay: z.string().optional().catch(undefined),
+});
 
-interface ParsedGoogleErrorBody {
-  error?: {
-    status?: string;
-    details?: GoogleErrorDetail[];
-    retry_after?: number;
-  };
-}
+const GoogleErrorDetailSchema = z.object({
+  reason: z.string().optional().catch(undefined),
+  retryDelay: z.string().optional().catch(undefined),
+  metadata: GoogleErrorMetadataSchema.optional().catch(undefined),
+});
+
+const GoogleErrorEnvelopeSchema = z
+  .object({
+    status: z.string().optional(),
+    details: z.array(z.unknown()).optional(),
+    retry_after: z.number().optional(),
+  })
+  .passthrough();
+
+const GoogleErrorBodySchema = z
+  .object({
+    error: GoogleErrorEnvelopeSchema.optional(),
+  })
+  .passthrough();
+
+const ParsedGoogleErrorBodySchema = z.union([GoogleErrorBodySchema, z.array(z.unknown())]);
+
+type GoogleErrorDetail = z.infer<typeof GoogleErrorDetailSchema>;
+type GoogleErrorEnvelope = z.infer<typeof GoogleErrorEnvelopeSchema>;
+type ParsedGoogleErrorBody = z.infer<typeof ParsedGoogleErrorBodySchema>;
 
 const FAILURE_COUNT_EXPIRY_MS = 60 * 60 * 1000;
 const MAX_RETRY_DELAY_SEARCH_DEPTH = 8;
@@ -57,8 +72,18 @@ const QUOTA_RETRY_PATTERNS = [
   /quotaResetDelay["'=:\s]+([^\s,"}\]]+)/i,
 ];
 
+type DurationUnit = keyof typeof DURATION_UNIT_TO_MS;
+
 function toLowerText(value: string | undefined): string {
   return (value ?? '').toLowerCase();
+}
+
+function isDurationUnit(value: string): value is DurationUnit {
+  return value === 'ms' || value === 's' || value === 'm' || value === 'h';
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function hasGenericResourceExhaustedSignal(body: string | undefined): boolean {
@@ -94,7 +119,10 @@ function parseDurationToMilliseconds(text: string): number | null {
       return null;
     }
 
-    const unit = match[2].toLowerCase() as keyof typeof DURATION_UNIT_TO_MS;
+    const unit = match[2]?.toLowerCase();
+    if (!unit || !isDurationUnit(unit)) {
+      return null;
+    }
     totalMs += value * DURATION_UNIT_TO_MS[unit];
   }
 
@@ -120,14 +148,25 @@ function tryParseGoogleErrorBody(body: string | undefined): ParsedGoogleErrorBod
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as ParsedGoogleErrorBody;
-    if (!isObjectLike(parsed)) {
-      return null;
-    }
-    return parsed;
+    const rawBody: unknown = JSON.parse(trimmed);
+    const parsedBody = ParsedGoogleErrorBodySchema.safeParse(rawBody);
+    return parsedBody.success ? parsedBody.data : null;
   } catch {
     return null;
   }
+}
+
+function getGoogleErrorEnvelope(
+  parsedBody: ParsedGoogleErrorBody | null,
+): GoogleErrorEnvelope | undefined {
+  return parsedBody && !Array.isArray(parsedBody) ? parsedBody.error : undefined;
+}
+
+function getGoogleErrorDetails(error: GoogleErrorEnvelope | undefined): GoogleErrorDetail[] {
+  return (error?.details ?? []).flatMap((detail) => {
+    const parsedDetail = GoogleErrorDetailSchema.safeParse(detail);
+    return parsedDetail.success ? [parsedDetail.data] : [];
+  });
 }
 
 function mapGoogleReasonToTrackerReason(reason: string): RateLimitReason | null {
@@ -149,13 +188,12 @@ function normalizeRetryHintKey(key: string): string {
 }
 
 function parseStructuredDurationObject(value: unknown): number | null {
-  if (!isObjectLike(value)) {
+  if (!isUnknownRecord(value)) {
     return null;
   }
 
-  const obj = value as Record<string, unknown>;
-  const seconds = Number(obj.seconds ?? obj.Seconds ?? 0);
-  const nanos = Number(obj.nanos ?? obj.Nanos ?? 0);
+  const seconds = Number(value.seconds ?? value.Seconds ?? 0);
+  const nanos = Number(value.nanos ?? value.Nanos ?? 0);
 
   if ((!Number.isFinite(seconds) || seconds <= 0) && (!Number.isFinite(nanos) || nanos <= 0)) {
     return null;
@@ -195,7 +233,7 @@ function extractStructuredDelayRecursive(value: unknown, depth: number): number 
     return null;
   }
 
-  if (!isObjectLike(value)) {
+  if (!isUnknownRecord(value)) {
     return null;
   }
 
@@ -204,7 +242,7 @@ function extractStructuredDelayRecursive(value: unknown, depth: number): number 
     return durationObjectDelay;
   }
 
-  for (const [key, childValue] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, childValue] of Object.entries(value)) {
     if (RETRY_HINT_KEYS.has(normalizeRetryHintKey(key))) {
       const hintedDelay = parseStructuredDurationValue(childValue);
       if (hintedDelay !== null) {
@@ -448,7 +486,8 @@ export class RateLimitTrackerService {
 
   private detectRateLimitReason(status: number, body: string | undefined): RateLimitReason {
     const parsedBody = tryParseGoogleErrorBody(body);
-    const details = Array.isArray(parsedBody?.error?.details) ? parsedBody?.error?.details : [];
+    const error = getGoogleErrorEnvelope(parsedBody);
+    const details = getGoogleErrorDetails(error);
     for (const detail of details) {
       if (!isString(detail.reason) || isEmpty(detail.reason.trim())) {
         continue;
@@ -459,7 +498,7 @@ export class RateLimitTrackerService {
       }
     }
 
-    const statusFromBody = parsedBody?.error?.status?.trim().toUpperCase();
+    const statusFromBody = error?.status?.trim().toUpperCase();
     if (statusFromBody === 'UNAVAILABLE') {
       const loweredBody = toLowerText(body);
       if (loweredBody.includes('no capacity available') || loweredBody.includes('model capacity')) {
@@ -571,7 +610,8 @@ export class RateLimitTrackerService {
     }
 
     const parsedBody = tryParseGoogleErrorBody(body);
-    const details = Array.isArray(parsedBody?.error?.details) ? parsedBody.error.details : [];
+    const error = getGoogleErrorEnvelope(parsedBody);
+    const details = getGoogleErrorDetails(error);
     for (const detail of details) {
       if (isString(detail.retryDelay) && !isEmpty(detail.retryDelay.trim())) {
         const parsedDelay = parseDurationToSeconds(detail.retryDelay);
@@ -598,7 +638,7 @@ export class RateLimitTrackerService {
       }
     }
 
-    const retryAfter = parsedBody?.error?.retry_after;
+    const retryAfter = error?.retry_after;
     if (isNumber(retryAfter) && retryAfter > 0) {
       return Math.ceil(retryAfter);
     }

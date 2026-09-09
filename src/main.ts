@@ -386,7 +386,7 @@ function createWindow({ startHidden }: { startHidden: boolean }) {
     show: !startHidden,
     autoHideMenuBar: true,
     webPreferences: {
-      backgroundThrottling: false,
+      backgroundThrottling: true,
       devTools: inDevelopment,
       sandbox: false,
       webviewTag: true,

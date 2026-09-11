@@ -6,7 +6,7 @@ Opt-in warmup and compatibility fixes are implemented locally; provider and nati
 
 ## Problem
 
-Five competitor commits changed unsigned Flash tool-call handling, platform tray assets, weekly quota presentation and weekly reset warmup. The previous partial port omitted request-envelope fields, admitted unsafe repeat scenarios, and removed non-weekly detailed quota presentation. A translated audit with immutable upstream and local baseline line evidence lives in the [comparison artifacts](../../../../artifacts/competitor-five-commits-2026-08-31/report.zh-CN.md).
+Five competitor commits changed unsigned Flash tool-call handling, platform tray assets, weekly quota presentation and weekly reset warmup. The previous partial port omitted request-envelope fields, admitted unsafe repeat scenarios, and removed non-weekly detailed quota presentation. A translated audit with immutable upstream and local baseline line evidence lives in comparison artifacts (`artifacts/competitor-five-commits-2026-08-31/report.zh-CN.md`).
 
 ## Decision
 
@@ -33,6 +33,6 @@ The feature is disabled by default and states that quota/AI-credit consumption i
 
 Focused tests cover candidate dates and thresholds, forbidden accounts, canonical history, persistence errors, concurrency and cancellation, settings failures, both quota views, both signature aliases, public Gemini request paths, platform tray choices and loopback HTTP request bodies/fallback behavior. The implementation report records exact commands and results after the final verification run.
 
-The unit test runner aliases native SQLite. A separate [native persistence check](../../../../artifacts/competitor-five-commits-2026-08-31/verify-native-persistence.mjs) bundles the actual settings store with an isolated database provider and runs two independent Electron-as-Node processes. It verifies native SQLite/Drizzle configuration and history round trips and corrupt-JSON rejection without opening the application or accessing user data.
+The unit test runner aliases native SQLite. A separate native persistence check (`artifacts/competitor-five-commits-2026-08-31/verify-native-persistence.mjs`) bundles the actual settings store with an isolated database provider and runs two independent Electron-as-Node processes. It verifies native SQLite/Drizzle configuration and history round trips and corrupt-JSON rejection without opening the application or accessing user data.
 
 Live-provider weekly reset effects, real credit consumption, packaged Electron execution, and macOS/Windows/Linux native tray appearance remain unverified here.
